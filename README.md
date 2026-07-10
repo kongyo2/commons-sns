@@ -51,4 +51,4 @@ npm run dev
 
 ## ライセンス
 
-AGPL-3.0-only を予定しています。正式な公開前にライセンス全文と、外部貢献に関する同意方式を確定します。
+GNU Affero General Public License v3.0 only（AGPL-3.0-only）で公開しています。詳しくは [LICENSE](./LICENSE) を参照してください。
