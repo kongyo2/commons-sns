@@ -7,35 +7,25 @@
   "assets": {
     "directory": "./build/client"
   },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "commons-db",
-      "database_id": "local",
-      "migrations_dir": "./migrations"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "MEDIA",
-      "bucket_name": "commons-media"
-    }
-  ],
-  "queues": {
-    "producers": [
-      {
-        "binding": "EVENTS",
-        "queue": "commons-events"
-      }
-    ],
-    "consumers": [
-      {
-        "queue": "commons-events",
-        "max_batch_size": 10,
-        "max_batch_timeout": 5
-      }
-    ]
-  },
+  // 初回のUIデプロイ後、実リソースを作成して次のBindingsを追加します。
+  // "d1_databases": [{
+  //   "binding": "DB",
+  //   "database_name": "commons-db",
+  //   "database_id": "Cloudflareで発行されたD1 UUID",
+  //   "migrations_dir": "./migrations"
+  // }],
+  // "r2_buckets": [{
+  //   "binding": "MEDIA",
+  //   "bucket_name": "commons-media"
+  // }],
+  // "queues": {
+  //   "producers": [{ "binding": "EVENTS", "queue": "commons-events" }],
+  //   "consumers": [{
+  //     "queue": "commons-events",
+  //     "max_batch_size": 10,
+  //     "max_batch_timeout": 5
+  //   }]
+  // },
   "observability": {
     "enabled": true
   },

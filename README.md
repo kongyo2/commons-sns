@@ -45,6 +45,18 @@ npm run dev
 
 詳しい役割分担は [ARCHITECTURE.md](./ARCHITECTURE.md) を参照してください。
 
+## Cloudflareへデプロイ
+
+初回はUIとWorkerだけをデプロイできます。Cloudflare Dashboardの **Workers & Pages** から **Create application** → **Import a repository** を選び、このリポジトリを接続してください。
+
+- Worker name: `commons-sns`
+- Production branch: `main`
+- Build command: `npm run build`
+- Deploy command: `npx wrangler deploy`
+- Root directory: `/`
+
+初回公開後にD1、R2、Queuesを作成し、`wrangler.jsonc`内のコメント化されたBindingsを有効にします。
+
 ## コントリビューション
 
 現在は初期設計中です。参加ルールは [CONTRIBUTING.md](./CONTRIBUTING.md)、意思決定の原則は [GOVERNANCE.md](./GOVERNANCE.md) を参照してください。
