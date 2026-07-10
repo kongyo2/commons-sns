@@ -1,0 +1,15 @@
+{
+  "include": ["vite.config.ts", "react-router.config.ts"],
+  "compilerOptions": {
+    "composite": true,
+    "strict": true,
+    "types": ["node"],
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  }
+}

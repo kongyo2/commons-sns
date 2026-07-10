@@ -1,0 +1,35 @@
+{
+  "name": "commons-sns",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "build": "react-router build",
+    "dev": "react-router dev",
+    "deploy": "npm run build && wrangler deploy",
+    "preview": "npm run build && vite preview",
+    "typecheck": "wrangler types && react-router typegen && tsc -b",
+    "cf-typegen": "wrangler types",
+    "db:migrate:local": "wrangler d1 migrations apply commons-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply commons-db --remote",
+    "postinstall": "wrangler types"
+  },
+  "dependencies": {
+    "isbot": "5.1.36",
+    "lucide-react": "1.24.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router": "8.2.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.44.0",
+    "@react-router/dev": "8.2.0",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3",
+    "vite": "8.1.4",
+    "wrangler": "4.110.0"
+  }
+}

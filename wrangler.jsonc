@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "commons-sns",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-07-10",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": "./build/client"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "commons-db",
+      "database_id": "local",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "commons-media"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "EVENTS",
+        "queue": "commons-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "commons-events",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5
+      }
+    ]
+  },
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true
+}
