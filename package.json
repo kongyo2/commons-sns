@@ -11,6 +11,12 @@
     "preview": "npm run build && vite preview",
     "typecheck": "wrangler types && react-router typegen && tsc -b",
     "cf-typegen": "wrangler types",
+    "lint": "oxlint --format agent",
+    "lint:fix": "oxlint --fix",
+    "lint:strict": "oxlint --deny-warnings",
+    "lint:ci": "oxlint --format github",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "db:migrate:local": "wrangler d1 migrations apply commons-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply commons-db --remote",
     "postinstall": "wrangler types"
@@ -28,6 +34,8 @@
     "@types/node": "26.1.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "oxlint": "1.73.0",
+    "prettier": "3.9.5",
     "typescript": "5.9.3",
     "vite": "8.1.4",
     "wrangler": "4.110.0"

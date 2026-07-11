@@ -1,10 +1,5 @@
 {
-  "include": [
-    ".react-router/types/**/*",
-    "app/**/*",
-    "workers/**/*",
-    "worker-configuration.d.ts"
-  ],
+  "include": [".react-router/types/**/*", "app/**/*", "workers/**/*", "worker-configuration.d.ts"],
   "compilerOptions": {
     "composite": true,
     "strict": true,
