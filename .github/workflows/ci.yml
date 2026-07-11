@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least-privilege: jobs only need to read the checked-out code.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep wrangler non-interactive and quiet in CI.
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every check independently instead of stopping at the first red.
+      fail-fast: false
+      matrix:
+        include:
+          - name: lint
+            run: npm run lint:ci
+          - name: format
+            run: npm run format:check
+          - name: typecheck
+            run: npm run typecheck
+          - name: build
+            run: npm run build
+          - name: migrations
+            run: npm run db:migrate:local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: ${{ matrix.run }}
