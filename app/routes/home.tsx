@@ -20,10 +20,10 @@ import {
   UserRound,
   UsersRound,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import { data, Form, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/home";
-import { cloudflareContext } from "../cloudflare";
+import { cloudflareContext, type AppEnv } from "../cloudflare";
 import {
   createSession,
   destroySession,
@@ -42,6 +42,8 @@ type ActionResult = {
   form?: "login" | "signup";
 };
 
+type ActionFetcher = ReturnType<typeof useFetcher<ActionResult>>;
+
 export function meta() {
   return [
     { title: "Commons — みんなで育てるSNS" },
@@ -50,119 +52,129 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const { env } = context.get(cloudflareContext);
+  const env = envFrom(context);
   const user = await getSessionUser(request, env);
   return { user, posts: await getTimeline(env, user?.id ?? null) };
+}
+
+function envFrom(context: Route.LoaderArgs["context"]) {
+  return context.get(cloudflareContext).env;
 }
 
 function formText(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
 }
 
+const fail = (error: string, status: number, form?: ActionResult["form"]) =>
+  data<ActionResult>({ error, ...(form ? { form } : {}) }, { status });
+
+const ok = () => data<ActionResult>({ ok: true });
+
 export async function action({ request, context }: Route.ActionArgs) {
-  const { env } = context.get(cloudflareContext);
+  const env = envFrom(context);
   const formData = await request.formData();
   const intent = formText(formData, "intent");
 
-  if (intent === "signup") {
-    const handle = formText(formData, "handle").toLowerCase().replace(/^@/, "");
-    const displayName = formText(formData, "displayName");
-    const password = String(formData.get("password") ?? "");
-    if (!/^[a-z0-9_]{3,20}$/.test(handle)) {
-      return data<ActionResult>(
-        { error: "IDは3〜20文字の半角英数字と_で入力してください。", form: "signup" },
-        { status: 400 },
-      );
-    }
-    if (displayName.length < 1 || displayName.length > 30) {
-      return data<ActionResult>({ error: "表示名は1〜30文字で入力してください。", form: "signup" }, { status: 400 });
-    }
-    if (password.length < 8 || password.length > 128) {
-      return data<ActionResult>(
-        { error: "パスワードは8〜128文字で入力してください。", form: "signup" },
-        { status: 400 },
-      );
-    }
-    const userId = crypto.randomUUID();
-    const { hash, salt } = await hashPassword(password);
-    try {
-      await env.DB.prepare(
-        `INSERT INTO users (id, handle, display_name, password_hash, password_salt)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-        .bind(userId, handle, displayName, hash, salt)
-        .run();
-    } catch {
-      return data<ActionResult>({ error: "そのIDはすでに使われています。", form: "signup" }, { status: 409 });
-    }
-    return redirect("/", { headers: { "Set-Cookie": await createSession(env, userId) } });
-  }
-
-  if (intent === "login") {
-    const handle = formText(formData, "handle").toLowerCase().replace(/^@/, "");
-    const password = String(formData.get("password") ?? "");
-    const user = await findUserForLogin(env, handle);
-    if (
-      !user?.password_hash ||
-      !user.password_salt ||
-      !(await verifyPassword(password, user.password_hash, user.password_salt))
-    ) {
-      return data<ActionResult>({ error: "IDまたはパスワードが違います。", form: "login" }, { status: 401 });
-    }
-    return redirect("/", { headers: { "Set-Cookie": await createSession(env, user.id) } });
-  }
-
-  if (intent === "logout") {
-    return redirect("/", { headers: { "Set-Cookie": await destroySession(request, env) } });
-  }
+  if (intent === "signup") return handleSignup(env, formData);
+  if (intent === "login") return handleLogin(env, formData);
+  if (intent === "logout") return handleLogout(env, request);
 
   const user = await getSessionUser(request, env);
-  if (!user) return data<ActionResult>({ error: "この操作にはログインが必要です。", form: "login" }, { status: 401 });
+  if (!user) return fail("この操作にはログインが必要です。", 401, "login");
 
-  if (intent === "createPost") {
-    const body = formText(formData, "body");
-    if (!body || body.length > 280)
-      return data<ActionResult>({ error: "投稿は1〜280文字で入力してください。" }, { status: 400 });
-    await env.DB.prepare("INSERT INTO posts (id, author_id, body, visibility) VALUES (?, ?, ?, 'public')")
-      .bind(crypto.randomUUID(), user.id, body)
-      .run();
-    return data<ActionResult>({ ok: true });
+  if (intent === "createPost") return handleCreatePost(env, formData, user);
+  if (intent === "toggleReaction") return handleToggleReaction(env, formData, user);
+  if (intent === "deletePost") return handleDeletePost(env, formData, user);
+
+  return fail("不明な操作です。", 400);
+}
+
+async function handleSignup(env: AppEnv, formData: FormData) {
+  const handle = formText(formData, "handle").toLowerCase().replace(/^@/, "");
+  const displayName = formText(formData, "displayName");
+  const password = String(formData.get("password") ?? "");
+  if (!/^[a-z0-9_]{3,20}$/.test(handle)) {
+    return fail("IDは3〜20文字の半角英数字と_で入力してください。", 400, "signup");
   }
-
-  if (intent === "toggleReaction") {
-    const postId = formText(formData, "postId");
-    const kind = formText(formData, "kind");
-    if (!postId || !["like", "repost", "bookmark"].includes(kind)) {
-      return data<ActionResult>({ error: "不正な操作です。" }, { status: 400 });
-    }
-    const exists = await env.DB.prepare(
-      "SELECT 1 AS present FROM post_reactions WHERE user_id = ? AND post_id = ? AND kind = ?",
-    )
-      .bind(user.id, postId, kind)
-      .first<{ present: number }>();
-    if (exists) {
-      await env.DB.prepare("DELETE FROM post_reactions WHERE user_id = ? AND post_id = ? AND kind = ?")
-        .bind(user.id, postId, kind)
-        .run();
-    } else {
-      await env.DB.prepare("INSERT INTO post_reactions (user_id, post_id, kind) VALUES (?, ?, ?)")
-        .bind(user.id, postId, kind)
-        .run();
-    }
-    return data<ActionResult>({ ok: true });
+  if (displayName.length < 1 || displayName.length > 30) {
+    return fail("表示名は1〜30文字で入力してください。", 400, "signup");
   }
-
-  if (intent === "deletePost") {
-    const postId = formText(formData, "postId");
+  if (password.length < 8 || password.length > 128) {
+    return fail("パスワードは8〜128文字で入力してください。", 400, "signup");
+  }
+  const userId = crypto.randomUUID();
+  const { hash, salt } = await hashPassword(password);
+  try {
     await env.DB.prepare(
-      "UPDATE posts SET deleted_at = datetime('now') WHERE id = ? AND author_id = ? AND deleted_at IS NULL",
+      `INSERT INTO users (id, handle, display_name, password_hash, password_salt)
+       VALUES (?, ?, ?, ?, ?)`,
     )
-      .bind(postId, user.id)
+      .bind(userId, handle, displayName, hash, salt)
       .run();
-    return data<ActionResult>({ ok: true });
+  } catch {
+    return fail("そのIDはすでに使われています。", 409, "signup");
   }
+  return redirect("/", { headers: { "Set-Cookie": await createSession(env, userId) } });
+}
 
-  return data<ActionResult>({ error: "不明な操作です。" }, { status: 400 });
+async function handleLogin(env: AppEnv, formData: FormData) {
+  const handle = formText(formData, "handle").toLowerCase().replace(/^@/, "");
+  const password = String(formData.get("password") ?? "");
+  const user = await findUserForLogin(env, handle);
+  if (
+    !user?.password_hash ||
+    !user.password_salt ||
+    !(await verifyPassword(password, user.password_hash, user.password_salt))
+  ) {
+    return fail("IDまたはパスワードが違います。", 401, "login");
+  }
+  return redirect("/", { headers: { "Set-Cookie": await createSession(env, user.id) } });
+}
+
+async function handleLogout(env: AppEnv, request: Request) {
+  return redirect("/", { headers: { "Set-Cookie": await destroySession(request, env) } });
+}
+
+async function handleCreatePost(env: AppEnv, formData: FormData, user: SessionUser) {
+  const body = formText(formData, "body");
+  if (!body || body.length > 280) return fail("投稿は1〜280文字で入力してください。", 400);
+  await env.DB.prepare("INSERT INTO posts (id, author_id, body, visibility) VALUES (?, ?, ?, 'public')")
+    .bind(crypto.randomUUID(), user.id, body)
+    .run();
+  return ok();
+}
+
+async function handleToggleReaction(env: AppEnv, formData: FormData, user: SessionUser) {
+  const postId = formText(formData, "postId");
+  const kind = formText(formData, "kind");
+  if (!postId || !["like", "repost", "bookmark"].includes(kind)) {
+    return fail("不正な操作です。", 400);
+  }
+  const exists = await env.DB.prepare(
+    "SELECT 1 AS present FROM post_reactions WHERE user_id = ? AND post_id = ? AND kind = ?",
+  )
+    .bind(user.id, postId, kind)
+    .first<{ present: number }>();
+  if (exists) {
+    await env.DB.prepare("DELETE FROM post_reactions WHERE user_id = ? AND post_id = ? AND kind = ?")
+      .bind(user.id, postId, kind)
+      .run();
+  } else {
+    await env.DB.prepare("INSERT INTO post_reactions (user_id, post_id, kind) VALUES (?, ?, ?)")
+      .bind(user.id, postId, kind)
+      .run();
+  }
+  return ok();
+}
+
+async function handleDeletePost(env: AppEnv, formData: FormData, user: SessionUser) {
+  const postId = formText(formData, "postId");
+  await env.DB.prepare(
+    "UPDATE posts SET deleted_at = datetime('now') WHERE id = ? AND author_id = ? AND deleted_at IS NULL",
+  )
+    .bind(postId, user.id)
+    .run();
+  return ok();
 }
 
 const navItems = [
@@ -204,6 +216,35 @@ function UserAvatar({ user, small = false }: { user: Pick<SessionUser, "displayN
   );
 }
 
+type IntentFormProps = ComponentProps<typeof Form> & {
+  intent: string;
+  fields?: Record<string, string>;
+  fetcher?: ActionFetcher;
+};
+
+function IntentForm({ intent, fields, fetcher, children, ...formProps }: IntentFormProps) {
+  const body = (
+    <>
+      <input type="hidden" name="intent" value={intent} />
+      {fields &&
+        Object.entries(fields).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
+      {children}
+    </>
+  );
+  if (fetcher) {
+    return (
+      <fetcher.Form method="post" action="?index" {...formProps}>
+        {body}
+      </fetcher.Form>
+    );
+  }
+  return (
+    <Form method="post" action="?index" {...formProps}>
+      {body}
+    </Form>
+  );
+}
+
 function AuthModal({
   mode,
   error,
@@ -230,8 +271,7 @@ function AuthModal({
         </span>
         <h2 id="auth-title">{mode === "login" ? "Commonsにログイン" : "Commonsをはじめる"}</h2>
         <p>{mode === "login" ? "おかえりなさい。" : "メールアドレスなしですぐに登録できます。"}</p>
-        <Form method="post" action="?index" className="auth-form">
-          <input type="hidden" name="intent" value={mode} />
+        <IntentForm intent={mode} className="auth-form">
           {mode === "signup" && (
             <label>
               表示名
@@ -265,7 +305,7 @@ function AuthModal({
           <button className="auth-submit" type="submit">
             {mode === "login" ? "ログイン" : "アカウントを作成"}
           </button>
-        </Form>
+        </IntentForm>
         <button className="auth-switch" onClick={() => onChange(mode === "login" ? "signup" : "login")}>
           {mode === "login" ? "はじめての方はこちら" : "すでにアカウントをお持ちの方"}
         </button>
@@ -291,8 +331,7 @@ function Composer({ user, onRequireLogin }: { user: SessionUser | null; onRequir
   }
 
   return (
-    <fetcher.Form method="post" action="?index" className="composer">
-      <input type="hidden" name="intent" value="createPost" />
+    <IntentForm fetcher={fetcher} intent="createPost" className="composer">
       <UserAvatar user={user} />
       <div className="composer-main">
         <textarea
@@ -321,21 +360,22 @@ function Composer({ user, onRequireLogin }: { user: SessionUser | null; onRequir
         </div>
         {fetcher.data?.error && <div className="inline-error">{fetcher.data.error}</div>}
       </div>
-    </fetcher.Form>
+    </IntentForm>
   );
 }
+
+type PostChildProps = {
+  post: TimelinePost;
+  user: SessionUser | null;
+  onRequireLogin: () => void;
+};
 
 function ReactionButton({
   post,
   kind,
   user,
   onRequireLogin,
-}: {
-  post: TimelinePost;
-  kind: "like" | "repost" | "bookmark";
-  user: SessionUser | null;
-  onRequireLogin: () => void;
-}) {
+}: PostChildProps & { kind: "like" | "repost" | "bookmark" }) {
   const fetcher = useFetcher<ActionResult>();
   const active = kind === "like" ? post.liked : kind === "repost" ? post.reposted : post.bookmarked;
   const count = kind === "like" ? post.likes : kind === "repost" ? post.reposts : undefined;
@@ -351,10 +391,7 @@ function ReactionButton({
       </button>
     );
   return (
-    <fetcher.Form method="post" action="?index">
-      <input type="hidden" name="intent" value="toggleReaction" />
-      <input type="hidden" name="postId" value={post.id} />
-      <input type="hidden" name="kind" value={kind} />
+    <IntentForm fetcher={fetcher} intent="toggleReaction" fields={{ postId: post.id, kind }}>
       <button
         type="submit"
         disabled={fetcher.state !== "idle"}
@@ -366,19 +403,11 @@ function ReactionButton({
         </span>
         {count !== undefined && <small>{count || ""}</small>}
       </button>
-    </fetcher.Form>
+    </IntentForm>
   );
 }
 
-function PostCard({
-  post,
-  user,
-  onRequireLogin,
-}: {
-  post: TimelinePost;
-  user: SessionUser | null;
-  onRequireLogin: () => void;
-}) {
+function PostCard({ post, user, onRequireLogin }: PostChildProps) {
   const deleteFetcher = useFetcher<ActionResult>();
   return (
     <article className="post">
@@ -397,13 +426,11 @@ function PostCard({
             <span>{timeAgo(post.createdAt)}</span>
           </div>
           {user?.id === post.authorId ? (
-            <deleteFetcher.Form method="post" action="?index">
-              <input type="hidden" name="intent" value="deletePost" />
-              <input type="hidden" name="postId" value={post.id} />
+            <IntentForm fetcher={deleteFetcher} intent="deletePost" fields={{ postId: post.id }}>
               <button type="submit" aria-label="削除">
                 <Trash2 size={17} />
               </button>
-            </deleteFetcher.Form>
+            </IntentForm>
           ) : (
             <button aria-label="その他">
               <MoreHorizontal size={19} />
@@ -485,12 +512,11 @@ export default function HomePage({ loaderData, actionData }: Route.ComponentProp
                 <strong>{user.displayName}</strong>
                 <small>@{user.handle}</small>
               </span>
-              <Form method="post" action="?index">
-                <input type="hidden" name="intent" value="logout" />
+              <IntentForm intent="logout">
                 <button className="icon-button" type="submit" aria-label="ログアウト">
                   <LogOut size={17} />
                 </button>
-              </Form>
+              </IntentForm>
             </div>
           ) : (
             <button className="account-switcher logged-out" onClick={requireLogin}>
