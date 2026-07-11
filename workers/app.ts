@@ -2,10 +2,7 @@ import { createRequestHandler, RouterContextProvider } from "react-router";
 import { cloudflareContext } from "../app/cloudflare";
 import type { AppEnv } from "../app/cloudflare";
 
-const requestHandler = createRequestHandler(
-  () => import("virtual:react-router/server-build"),
-  import.meta.env.MODE,
-);
+const requestHandler = createRequestHandler(() => import("virtual:react-router/server-build"), import.meta.env.MODE);
 
 export type SocialEvent = {
   type: "post.created" | "reaction.changed" | "media.uploaded";

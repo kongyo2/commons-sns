@@ -37,13 +37,7 @@ async function sha256(value: string) {
 
 async function derivePassword(password: string, saltHex: string) {
   const salt = new Uint8Array(saltHex.match(/.{1,2}/g)?.map((part) => Number.parseInt(part, 16)) ?? []);
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    "PBKDF2",
-    false,
-    ["deriveBits"],
-  );
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
     { name: "PBKDF2", hash: "SHA-256", salt, iterations: PBKDF2_ITERATIONS },
     key,
@@ -94,7 +88,9 @@ export async function findUserForLogin(env: AppEnv, handle: string) {
   return env.DB.prepare(
     `SELECT id, handle, display_name, role, password_hash, password_salt
      FROM users WHERE handle = ? COLLATE NOCASE LIMIT 1`,
-  ).bind(handle).first<AuthRow>();
+  )
+    .bind(handle)
+    .first<AuthRow>();
 }
 
 export async function getSessionUser(request: Request, env: AppEnv): Promise<SessionUser | null> {
@@ -107,7 +103,9 @@ export async function getSessionUser(request: Request, env: AppEnv): Promise<Ses
      JOIN users u ON u.id = s.user_id
      WHERE s.id_hash = ? AND s.expires_at > datetime('now')
      LIMIT 1`,
-  ).bind(idHash).first<Omit<AuthRow, "password_hash" | "password_salt">>();
+  )
+    .bind(idHash)
+    .first<Omit<AuthRow, "password_hash" | "password_salt">>();
   if (!row) return null;
   return { id: row.id, handle: row.handle, displayName: row.display_name, role: row.role };
 }
@@ -127,6 +125,9 @@ export async function createSession(env: AppEnv, userId: string) {
 
 export async function destroySession(request: Request, env: AppEnv) {
   const token = cookieValue(request, SESSION_COOKIE);
-  if (token) await env.DB.prepare("DELETE FROM sessions WHERE id_hash = ?").bind(await sha256(token)).run();
+  if (token)
+    await env.DB.prepare("DELETE FROM sessions WHERE id_hash = ?")
+      .bind(await sha256(token))
+      .run();
   return sessionCookie("", 0);
 }

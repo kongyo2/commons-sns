@@ -48,7 +48,9 @@ export async function getTimeline(env: AppEnv, viewerId: string | null): Promise
     const placeholders = rows.map(() => "?").join(",");
     const reactionResult = await env.DB.prepare(
       `SELECT post_id, kind FROM post_reactions WHERE user_id = ? AND post_id IN (${placeholders})`,
-    ).bind(viewerId, ...rows.map((row) => row.id)).all<ReactionRow>();
+    )
+      .bind(viewerId, ...rows.map((row) => row.id))
+      .all<ReactionRow>();
     for (const reaction of reactionResult.results ?? []) {
       const set = reactions.get(reaction.post_id) ?? new Set<ReactionRow["kind"]>();
       set.add(reaction.kind);

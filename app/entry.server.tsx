@@ -10,15 +10,12 @@ export default async function handleRequest(
   routerContext: EntryContext,
 ) {
   let shellRendered = false;
-  const body = await renderToReadableStream(
-    <ServerRouter context={routerContext} url={request.url} />,
-    {
-      onError(error: unknown) {
-        responseStatusCode = 500;
-        if (shellRendered) console.error(error);
-      },
+  const body = await renderToReadableStream(<ServerRouter context={routerContext} url={request.url} />, {
+    onError(error: unknown) {
+      responseStatusCode = 500;
+      if (shellRendered) console.error(error);
     },
-  );
+  });
   shellRendered = true;
 
   const userAgent = request.headers.get("user-agent");
