@@ -14,6 +14,23 @@ export type UserProfile = {
   followingCount: number;
 };
 
+export type ProfileValidationErrorCode = "displayNameLength" | "bioLength";
+
+const PROFILE_VALIDATION_MESSAGES: Record<ProfileValidationErrorCode, string> = {
+  displayNameLength: `displayName must be between ${DISPLAY_NAME_MIN_LENGTH} and ${DISPLAY_NAME_MAX_LENGTH} characters`,
+  bioLength: `bio must be ${BIO_MAX_LENGTH} characters or fewer`,
+};
+
+export class ProfileValidationError extends Error {
+  readonly code: ProfileValidationErrorCode;
+
+  constructor(code: ProfileValidationErrorCode) {
+    super(PROFILE_VALIDATION_MESSAGES[code]);
+    this.name = "ProfileValidationError";
+    this.code = code;
+  }
+}
+
 type UserProfileRow = {
   id: string;
   handle: string;
@@ -64,10 +81,10 @@ export async function updateUserProfile(env: AppEnv, userId: string, values: { d
   const bio = sanitizeText(values.bio, { multiline: true });
   const displayNameLength = countCodePoints(displayName, DISPLAY_NAME_MAX_LENGTH);
   if (displayNameLength < DISPLAY_NAME_MIN_LENGTH || displayNameLength > DISPLAY_NAME_MAX_LENGTH) {
-    throw new Error("displayName must be between 1 and 30 characters");
+    throw new ProfileValidationError("displayNameLength");
   }
   if (countCodePoints(bio, BIO_MAX_LENGTH) > BIO_MAX_LENGTH) {
-    throw new Error("bio must be 160 characters or fewer");
+    throw new ProfileValidationError("bioLength");
   }
 
   await env.DB.prepare("UPDATE users SET display_name = ?, bio = ? WHERE id = ?").bind(displayName, bio, userId).run();
