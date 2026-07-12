@@ -280,7 +280,7 @@ function AuthModal({
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    dialogRef.current?.querySelector("input")?.focus();
+    dialogRef.current?.querySelector<HTMLInputElement>("input:not([type='hidden'])")?.focus();
     return () => previouslyFocused?.focus();
   }, []);
   return (
