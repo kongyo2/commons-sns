@@ -41,9 +41,6 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   try {
-    // All-or-nothing delete, children before parent, so account removal does not
-    // depend on ON DELETE CASCADE being present. Every statement is scoped to the
-    // acting user id.
     await env.DB.batch([
       env.DB.prepare("DELETE FROM post_reactions WHERE user_id = ?").bind(user.id),
       env.DB.prepare("DELETE FROM post_reactions WHERE post_id IN (SELECT id FROM posts WHERE author_id = ?)").bind(

@@ -100,9 +100,6 @@ export async function findUserForLogin(env: AppEnv, handle: string) {
 export async function getSessionUser(request: Request, env: AppEnv): Promise<SessionUser | null> {
   const token = cookieValue(request, SESSION_COOKIE);
   if (!token) return null;
-  // Only a missing or expired session yields null; a lookup failure (e.g. a
-  // transient D1 outage) propagates so callers surface an error instead of
-  // silently presenting a signed-in user as logged out.
   const idHash = await sha256(token);
   const row = await env.DB.prepare(
     `SELECT u.id, u.handle, u.display_name, u.role
@@ -144,9 +141,6 @@ export async function destroySession(request: Request, env: AppEnv) {
   return clearSessionCookie();
 }
 
-// Constant dummy credentials (valid 32-hex salt, 64-hex hash) used to spend an
-// equivalent PBKDF2 derivation when a user has no stored password, removing the
-// login timing side-channel that would otherwise reveal whether a handle exists.
 const DUMMY_SALT = "00000000000000000000000000000000";
 const DUMMY_HASH = "0000000000000000000000000000000000000000000000000000000000000000";
 

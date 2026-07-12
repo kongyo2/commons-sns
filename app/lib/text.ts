@@ -1,10 +1,4 @@
-// Shared text helpers.  This module intentionally has no server-only imports so
-// it is safe to include in the client bundle.
-
 export function countCodePoints(value: string, limit: number = Number.POSITIVE_INFINITY): number {
-  // Iterate code points without materializing an array, stopping once the count
-  // passes `limit`, so oversized (e.g. unauthenticated) input can't force a large
-  // allocation just to fail a length check.
   let count = 0;
   const iterator = value[Symbol.iterator]();
   while (!iterator.next().done) {
@@ -21,15 +15,9 @@ export function sliceCodePoints(value: string, max: number): string {
   return points.slice(0, max).join("");
 }
 
-// The sanitiser strips characters that carry no visible content but are common
-// vectors for spoofing display names and handles.  Ranges are assembled from code
-// points so the regex source itself never contains literal control characters.
 const codePoint = (code: number) => String.fromCharCode(code);
 const codeRange = (from: number, to: number) => `${codePoint(from)}-${codePoint(to)}`;
 
-// DEL + C1 controls (U+007F-009F), zero-width space (U+200B), directional marks
-// (U+200E-200F), word-joiner (U+2060), BOM / ZWNBSP (U+FEFF) and bidi overrides /
-// isolates (U+202A-202E, U+2066-2069).  Stripped in every mode.
 const INVISIBLE_CLASS =
   codeRange(0x007f, 0x009f) +
   codePoint(0x200b) +
@@ -39,16 +27,8 @@ const INVISIBLE_CLASS =
   codeRange(0x202a, 0x202e) +
   codeRange(0x2066, 0x2069);
 
-// ZWNJ (U+200C) and ZWJ (U+200D) carry meaning: ZWJ builds emoji sequences (the
-// family emoji, professions) and ZWNJ controls shaping in Persian / Indic
-// scripts.  They are stripped only in the stricter single-line mode (display
-// names, handles), never from multiline bodies and bios, so user-authored text
-// is stored as typed.
 const JOINERS_CLASS = codeRange(0x200c, 0x200d);
 
-// Single-line strips every C0 control (including TAB and LF) plus the joiners;
-// multiline keeps TAB (U+0009) and LF (U+000A) so paragraph breaks survive, and
-// keeps the joiners so emoji sequences and script shaping are preserved.
 const SINGLE_LINE_PATTERN = new RegExp(`[${codeRange(0x0000, 0x001f)}${INVISIBLE_CLASS}${JOINERS_CLASS}]`, "gu");
 const MULTILINE_PATTERN = new RegExp(
   `[${codeRange(0x0000, 0x0008)}${codeRange(0x000b, 0x001f)}${INVISIBLE_CLASS}]`,

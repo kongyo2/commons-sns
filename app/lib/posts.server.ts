@@ -41,9 +41,6 @@ const POST_SELECT_SQL = `
   (SELECT COUNT(*) FROM post_reactions lr WHERE lr.post_id = p.id AND lr.kind = 'like') AS likes
 `;
 
-// D1 allows at most 100 bound parameters per statement.  Each reaction lookup
-// spends one bind on viewerId, so cap the IN() list at 50 ids (51 binds/query)
-// and merge the results across batches.
 const REACTION_BATCH_SIZE = 50;
 
 async function hydratePosts(env: AppEnv, rows: PostRow[], viewerId: string | null): Promise<TimelinePost[]> {

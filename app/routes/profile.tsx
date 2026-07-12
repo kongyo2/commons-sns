@@ -29,9 +29,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const requestedPage = Number.parseInt(new URL(request.url).searchParams.get("page") ?? "1", 10);
   const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
 
-  // A transient read failure should still render the profile header, so flag the
-  // error and show a load message rather than 500-ing the whole route or
-  // implying a profile with posts is empty.
   let posts: TimelinePost[] = [];
   let hasNextPage = false;
   let postsError = false;

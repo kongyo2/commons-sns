@@ -17,8 +17,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const user = await getSessionUser(request, env);
   if (!user) return redirect("/");
 
-  // Keep the page rendering even if the read blips, but distinguish a load
-  // failure from a genuinely empty list so we never imply saved items vanished.
   let posts: TimelinePost[] = [];
   let bookmarksError = false;
   try {
