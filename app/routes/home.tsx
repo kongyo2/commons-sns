@@ -117,7 +117,7 @@ async function handleSignup(env: AppEnv, formData: FormData) {
   if (isReservedHandle(handle)) {
     return fail("このIDは使用できません。", 400, "signup");
   }
-  const displayNameLength = countCodePoints(displayName);
+  const displayNameLength = countCodePoints(displayName, 30);
   if (displayNameLength < 1 || displayNameLength > 30) {
     return fail("表示名は1〜30文字で入力してください。", 400, "signup");
   }
@@ -168,7 +168,7 @@ async function handleLogout(env: AppEnv, request: Request) {
 
 async function handleCreatePost(env: AppEnv, formData: FormData, user: SessionUser) {
   const clean = sanitizeText(formText(formData, "body"), { multiline: true });
-  if (!clean || countCodePoints(clean) > 280) return fail("投稿は1〜280文字で入力してください。", 400);
+  if (!clean || countCodePoints(clean, 280) > 280) return fail("投稿は1〜280文字で入力してください。", 400);
   await env.DB.prepare("INSERT INTO posts (id, author_id, body, visibility) VALUES (?, ?, ?, 'public')")
     .bind(crypto.randomUUID(), user.id, clean)
     .run();
@@ -294,7 +294,6 @@ function AuthModal({
         open
         className="auth-modal"
         aria-labelledby="auth-title"
-        aria-modal="true"
         onKeyDown={(event) => {
           if (event.key === "Escape") onClose();
         }}

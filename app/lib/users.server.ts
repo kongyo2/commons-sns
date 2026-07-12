@@ -62,11 +62,11 @@ export async function getUserProfileByHandle(env: AppEnv, handle: string): Promi
 export async function updateUserProfile(env: AppEnv, userId: string, values: { displayName: string; bio: string }) {
   const displayName = sanitizeText(values.displayName);
   const bio = sanitizeText(values.bio, { multiline: true });
-  const displayNameLength = countCodePoints(displayName);
+  const displayNameLength = countCodePoints(displayName, DISPLAY_NAME_MAX_LENGTH);
   if (displayNameLength < DISPLAY_NAME_MIN_LENGTH || displayNameLength > DISPLAY_NAME_MAX_LENGTH) {
     throw new Error("displayName must be between 1 and 30 characters");
   }
-  if (countCodePoints(bio) > BIO_MAX_LENGTH) {
+  if (countCodePoints(bio, BIO_MAX_LENGTH) > BIO_MAX_LENGTH) {
     throw new Error("bio must be 160 characters or fewer");
   }
 

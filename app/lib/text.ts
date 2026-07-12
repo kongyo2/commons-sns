@@ -1,8 +1,17 @@
 // Shared text helpers.  This module intentionally has no server-only imports so
 // it is safe to include in the client bundle.
 
-export function countCodePoints(value: string): number {
-  return [...value].length;
+export function countCodePoints(value: string, limit: number = Number.POSITIVE_INFINITY): number {
+  // Iterate code points without materializing an array, stopping once the count
+  // passes `limit`, so oversized (e.g. unauthenticated) input can't force a large
+  // allocation just to fail a length check.
+  let count = 0;
+  const iterator = value[Symbol.iterator]();
+  while (!iterator.next().done) {
+    count += 1;
+    if (count > limit) break;
+  }
+  return count;
 }
 
 export function sliceCodePoints(value: string, max: number): string {

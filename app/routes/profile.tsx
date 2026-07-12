@@ -78,13 +78,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   const displayName = sanitizeText(String(formData.get("displayName") ?? ""));
   const bio = sanitizeText(String(formData.get("bio") ?? ""), { multiline: true });
-  if (
-    countCodePoints(displayName) < DISPLAY_NAME_MIN_LENGTH ||
-    countCodePoints(displayName) > DISPLAY_NAME_MAX_LENGTH
-  ) {
+  const displayNameLength = countCodePoints(displayName, DISPLAY_NAME_MAX_LENGTH);
+  if (displayNameLength < DISPLAY_NAME_MIN_LENGTH || displayNameLength > DISPLAY_NAME_MAX_LENGTH) {
     return data<ActionResult>({ error: "表示名は1〜30文字で入力してください。" }, { status: 400 });
   }
-  if (countCodePoints(bio) > BIO_MAX_LENGTH) {
+  if (countCodePoints(bio, BIO_MAX_LENGTH) > BIO_MAX_LENGTH) {
     return data<ActionResult>({ error: "自己紹介は160文字以内で入力してください。" }, { status: 400 });
   }
 
