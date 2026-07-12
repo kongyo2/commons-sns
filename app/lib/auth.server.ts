@@ -100,23 +100,28 @@ export async function findUserForLogin(env: AppEnv, handle: string) {
 export async function getSessionUser(request: Request, env: AppEnv): Promise<SessionUser | null> {
   const token = cookieValue(request, SESSION_COOKIE);
   if (!token) return null;
-  const idHash = await sha256(token);
-  const row = await env.DB.prepare(
-    `SELECT u.id, u.handle, u.display_name, u.role
-     FROM sessions s
-     JOIN users u ON u.id = s.user_id
-     WHERE s.id_hash = ? AND s.expires_at > datetime('now')
-     LIMIT 1`,
-  )
-    .bind(idHash)
-    .first<Omit<AuthRow, "password_hash" | "password_salt">>();
-  if (!row) return null;
-  return {
-    id: row.id,
-    handle: row.handle,
-    displayName: row.display_name,
-    role: row.role,
-  };
+  try {
+    const idHash = await sha256(token);
+    const row = await env.DB.prepare(
+      `SELECT u.id, u.handle, u.display_name, u.role
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.id_hash = ? AND s.expires_at > datetime('now')
+       LIMIT 1`,
+    )
+      .bind(idHash)
+      .first<Omit<AuthRow, "password_hash" | "password_salt">>();
+    if (!row) return null;
+    return {
+      id: row.id,
+      handle: row.handle,
+      displayName: row.display_name,
+      role: row.role,
+    };
+  } catch (error) {
+    console.error("getSessionUser failed", error);
+    return null;
+  }
 }
 
 export async function createSession(env: AppEnv, userId: string) {
@@ -139,4 +144,20 @@ export async function destroySession(request: Request, env: AppEnv) {
       .bind(await sha256(token))
       .run();
   return clearSessionCookie();
+}
+
+// Constant dummy credentials (valid 32-hex salt, 64-hex hash) used to spend an
+// equivalent PBKDF2 derivation when a user has no stored password, removing the
+// login timing side-channel that would otherwise reveal whether a handle exists.
+const DUMMY_SALT = "00000000000000000000000000000000";
+const DUMMY_HASH = "0000000000000000000000000000000000000000000000000000000000000000";
+
+export async function verifyPasswordOrDummy(
+  password: string,
+  hash: string | null | undefined,
+  salt: string | null | undefined,
+): Promise<boolean> {
+  if (hash && salt) return verifyPassword(password, hash, salt);
+  await verifyPassword(password, DUMMY_HASH, DUMMY_SALT);
+  return false;
 }

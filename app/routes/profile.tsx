@@ -6,6 +6,7 @@ import { getSessionUser } from "../lib/auth.server";
 import { avatarClass, normalizeDate, PostIdentity, PostReactionCounts } from "../lib/post-presentation";
 import { getUserPosts, type TimelinePost } from "../lib/posts.server";
 import { BIO_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_MIN_LENGTH } from "../lib/profile-constraints";
+import { countCodePoints, sanitizeText } from "../lib/text";
 import { getUserProfileByHandle, updateUserProfile } from "../lib/users.server";
 
 type ActionResult = { ok?: boolean; error?: string };
@@ -27,17 +28,28 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const user = await getSessionUser(request, env);
   const requestedPage = Number.parseInt(new URL(request.url).searchParams.get("page") ?? "1", 10);
   const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
-  const fetchedPosts = await getUserPosts(env, profile.id, user?.id ?? null, {
-    limit: PROFILE_PAGE_SIZE + 1,
-    offset: (page - 1) * PROFILE_PAGE_SIZE,
-  });
+
+  // A transient read failure should still render the profile header, so fall
+  // back to an empty page rather than 500-ing the whole route.
+  let posts: TimelinePost[] = [];
+  let hasNextPage = false;
+  try {
+    const fetchedPosts = await getUserPosts(env, profile.id, user?.id ?? null, {
+      limit: PROFILE_PAGE_SIZE + 1,
+      offset: (page - 1) * PROFILE_PAGE_SIZE,
+    });
+    posts = fetchedPosts.slice(0, PROFILE_PAGE_SIZE);
+    hasNextPage = fetchedPosts.length > PROFILE_PAGE_SIZE;
+  } catch (error) {
+    console.error("Failed to load profile posts", error);
+  }
 
   return {
     user,
     profile,
-    posts: fetchedPosts.slice(0, PROFILE_PAGE_SIZE),
+    posts,
     page,
-    hasNextPage: fetchedPosts.length > PROFILE_PAGE_SIZE,
+    hasNextPage,
   };
 }
 
@@ -60,12 +72,15 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return data<ActionResult>({ error: "不正な操作です。" }, { status: 400 });
   }
 
-  const displayName = String(formData.get("displayName") ?? "").trim();
-  const bio = String(formData.get("bio") ?? "").trim();
-  if (displayName.length < DISPLAY_NAME_MIN_LENGTH || displayName.length > DISPLAY_NAME_MAX_LENGTH) {
+  const displayName = sanitizeText(String(formData.get("displayName") ?? ""));
+  const bio = sanitizeText(String(formData.get("bio") ?? ""), { multiline: true });
+  if (
+    countCodePoints(displayName) < DISPLAY_NAME_MIN_LENGTH ||
+    countCodePoints(displayName) > DISPLAY_NAME_MAX_LENGTH
+  ) {
     return data<ActionResult>({ error: "表示名は1〜30文字で入力してください。" }, { status: 400 });
   }
-  if (bio.length > BIO_MAX_LENGTH) {
+  if (countCodePoints(bio) > BIO_MAX_LENGTH) {
     return data<ActionResult>({ error: "自己紹介は160文字以内で入力してください。" }, { status: 400 });
   }
 
