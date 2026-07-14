@@ -192,11 +192,13 @@ function ProfileEditModal({
           onClose();
         }}
       >
-        <div className="pe-banner" aria-hidden="true">
+        <div className="pe-banner">
           <button type="button" className="modal-close" onClick={onClose} aria-label="閉じる">
             ×
           </button>
-          <div className={`avatar ${avatarClass(profile.handle)} pe-avatar`}>{previewInitial}</div>
+          <div className={`avatar ${avatarClass(profile.handle)} pe-avatar`} aria-hidden="true">
+            {previewInitial}
+          </div>
         </div>
 
         <div className="pe-body">
