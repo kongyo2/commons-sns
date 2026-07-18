@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+// workers/app.ts mentions "virtual:react-router/server-build" only inside the
+// lazy callback handed to createRequestHandler. Vitest (Vite's SSR transform)
+// resolves dynamic imports at call time, and the paths under test — the
+// health endpoint and the queue consumer — never invoke that callback, so the
+// virtual module does not need to exist in this test environment.
 import worker, { type SocialEvent } from "./app";
 
 type WorkerRequest = Parameters<NonNullable<(typeof worker)["fetch"]>>[0];
