@@ -14,8 +14,10 @@
 //   node .claude/skills/run-commons-sns/driver.mjs shot /users/commons_dev out.png
 //
 // Env:
-//   COMMONS_BASE_URL  base URL of the running dev server (default http://localhost:5173)
-//   COMMONS_SHOTS     screenshot output dir (default /tmp/commons-shots)
+//   COMMONS_BASE_URL     base URL of the running dev server (default http://localhost:5173)
+//   COMMONS_SHOTS        screenshot output dir (default /tmp/commons-shots)
+//   COMMONS_ALLOW_REMOTE set to 1 to let the mutating `smoke` flow run against a
+//                        non-local origin (off by default — see the guard below)
 // Sequential browser steps (nav → wait → click → screenshot) each depend on
 // the previous, so awaiting inside loops is intended here — the same reason
 // .oxlintrc.json turns this rule off for e2e/**.
@@ -38,6 +40,24 @@ function url(path) {
   const u = new URL(path, BASE);
   if (!u.searchParams.has("autoReloadMs")) u.searchParams.set("autoReloadMs", "0");
   return u.toString();
+}
+
+// `smoke` performs real writes (signup + a post). Refuse to run it against a
+// non-local origin so a stray COMMONS_BASE_URL can never mutate the deployed
+// instance's data. `shot` is read-only and is not gated.
+function isLoopbackHost(host) {
+  const h = host.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+  return h === "localhost" || h.endsWith(".localhost") || h === "127.0.0.1" || h === "0.0.0.0" || h === "::1";
+}
+
+function mutationsAllowed() {
+  return isLoopbackHost(new URL(BASE).hostname) || process.env.COMMONS_ALLOW_REMOTE === "1";
+}
+
+// Cold-start Vite dep pre-bundling logs these on the very first load; they are
+// benign and gone on warm runs. Everything else is a real error that fails.
+function isColdStartNoise(text) {
+  return /Outdated Optimize Dep/i.test(text) || /Failed to fetch dynamically imported module/i.test(text);
 }
 
 async function launch() {
@@ -86,6 +106,10 @@ async function smoke(page) {
   await page.locator(".account-switcher").filter({ hasText: user.displayName }).waitFor({ timeout: 15_000 });
   console.log(`signed up: @${user.handle}`);
 
+  // Signup redirects to a bare "/", which re-enables the dev 2s auto-reload.
+  // Reload through url() to restore ?autoReloadMs=0 before posting/screenshotting.
+  await page.goto(url("/"), { waitUntil: "networkidle" });
+
   // 3. Post to the timeline.
   const body = `driver smoke ${new Date().toISOString()}`;
   const composer = page.locator("form.composer");
@@ -107,6 +131,15 @@ async function shot(page, path, out) {
 
 async function main() {
   const cmd = process.argv[2] ?? "smoke";
+
+  if (cmd === "smoke" && !mutationsAllowed()) {
+    console.error(
+      `DRIVER FAILED: refusing to run the mutating smoke flow against non-local origin ${BASE}.\n` +
+        `Point COMMONS_BASE_URL at localhost, or set COMMONS_ALLOW_REMOTE=1 to override.`,
+    );
+    process.exit(1);
+  }
+
   const browser = await launch();
   const context = await browser.newContext({ locale: "ja-JP", timezoneId: "Asia/Tokyo" });
   const page = await context.newPage();
@@ -131,13 +164,18 @@ async function main() {
     await browser.close();
   }
 
-  if (errors.length) {
-    console.error(`\nconsole errors (${errors.length}):`);
-    for (const e of errors) console.error(`  - ${e}`);
+  const coldStart = errors.filter(isColdStartNoise);
+  const real = errors.filter((e) => !isColdStartNoise(e));
+  if (coldStart.length) console.log(`\nignored ${coldStart.length} cold-start Vite error(s)`);
+  if (real.length) {
+    console.error(`console errors (${real.length}):`);
+    for (const e of real) console.error(`  - ${e}`);
   } else {
-    console.log("\nconsole errors: none");
+    console.log("console errors: none");
   }
-  process.exit(failed ? 1 : 0);
+  // Real browser errors fail the run even when the DOM flow completed, so CI /
+  // agent smoke runs that gate on exit status don't treat them as a pass.
+  process.exit(failed || real.length > 0 ? 1 : 0);
 }
 
 await main();

@@ -7,7 +7,7 @@ commons-sns is a server-rendered SNS: React Router 8 on Cloudflare Workers, with
 
 All paths below are relative to the repo root (`commons-sns/`).
 
-> **Never touch remote data.** The upstream (`anitigravitylab-oss/commons-sns`) is deployed with real data. Use only the `--local` D1. Do **not** run `db:migrate:remote`, `wrangler deploy`, `wrangler d1 execute --remote`, or `npm run deploy`.
+> **Never touch remote data.** The upstream (`anitigravitylab-oss/commons-sns`) is deployed with real data. Use only the `--local` D1. Do **not** run `db:migrate:remote`, `wrangler deploy`, `wrangler d1 execute --remote`, or `npm run deploy`. As a backstop, the driver's `smoke` flow (which writes) refuses any non-loopback `COMMONS_BASE_URL` unless `COMMONS_ALLOW_REMOTE=1` is set.
 
 ## Prerequisites
 
@@ -56,7 +56,7 @@ Screenshot any route without the signup flow:
 node .claude/skills/run-commons-sns/driver.mjs shot /users/commons_dev /tmp/commons-shots/profile.png
 ```
 
-The driver prints `console errors: none` on success and exits non-zero on failure. Stop the dev server with:
+The driver filters known cold-start Vite 504s, prints any remaining console/page errors, and exits non-zero if the flow fails **or** a real browser error occurred — so a CI/agent run that gates on exit status won't treat a broken page as a pass. Stop the dev server with:
 
 ```bash
 pkill -f 'react-router dev'
@@ -69,7 +69,7 @@ pkill -f 'react-router dev'
 | `smoke` (default) | signup → post → 2 screenshots; checks console errors |
 | `shot <path> <out.png>` | full-page screenshot of one route |
 
-Env: `COMMONS_BASE_URL` (default `http://localhost:5173`), `COMMONS_SHOTS` (default `/tmp/commons-shots`).
+Env: `COMMONS_BASE_URL` (default `http://localhost:5173`), `COMMONS_SHOTS` (default `/tmp/commons-shots`), `COMMONS_ALLOW_REMOTE=1` (opt out of the `smoke` local-origin guard — only if you really mean to write to a non-local origin).
 
 ## Run (human path)
 
@@ -89,7 +89,7 @@ npx playwright test --workers=1             # 36 e2e tests, ~2 min, deterministi
 
 ## Gotchas
 
-- **First driver run logs three `504 (Outdated Optimize Dep)` console errors.** Vite is pre-bundling deps on the cold first load; the flow still completes and screenshots render. A warm re-run prints `console errors: none`. Ignore them on run #1.
+- **First driver run hits three `504 (Outdated Optimize Dep)` errors.** Vite pre-bundles deps on the cold first load; the flow still completes and screenshots render. The driver recognizes these (and the follow-on "Failed to fetch dynamically imported module") as cold-start noise, reports `ignored N cold-start Vite error(s)`, and does **not** fail the run for them — only genuinely unexpected console/page errors set a non-zero exit. A warm re-run prints `console errors: none`.
 - **Dev-only timeline auto-reload breaks `networkidle`.** The home timeline re-fetches every 2s in dev, so the network never idles and screenshots flicker mid-revalidation. The driver appends `?autoReloadMs=0` to every nav. Driving by hand? Do the same, or set `COMMONS_LOCAL_AUTO_RELOAD_MS=0` in `.dev.vars`.
 - **React hydration race on the first click.** The SSR button paints before its handler attaches, so a `click()` right after load can no-op. The driver's `clickExpecting` retries the click until the dialog appears — mirror it for any first-interaction click.
 - **E2E is flaky at the default 4 workers, green at `--workers=1`.** Not a product bug — parallel signups contend on the single local SQLite writer. CI uses 1 worker + 2 retries.
