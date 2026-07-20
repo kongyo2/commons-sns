@@ -7,7 +7,7 @@ commons-sns is a server-rendered SNS: React Router 8 on Cloudflare Workers, with
 
 All paths below are relative to the repo root (`commons-sns/`).
 
-> **Never touch remote data.** The upstream (`anitigravitylab-oss/commons-sns`) is deployed with real data. Use only the `--local` D1. Do **not** run `db:migrate:remote`, `wrangler deploy`, `wrangler d1 execute --remote`, or `npm run deploy`. As a backstop, the driver's `smoke` flow (which writes) refuses any non-loopback `COMMONS_BASE_URL` unless `COMMONS_ALLOW_REMOTE=1` is set.
+> **Never touch the deployed instance's data.** This app runs on Cloudflare with a production D1 that holds real data. Everything here uses only the **local** D1 (Miniflare). Do **not** run `db:migrate:remote`, `wrangler deploy`, `wrangler d1 execute --remote`, or `npm run deploy`. As a backstop, the driver's `smoke` flow (which writes) refuses any non-loopback `COMMONS_BASE_URL` unless `COMMONS_ALLOW_REMOTE=1` is set.
 
 ## Prerequisites
 
