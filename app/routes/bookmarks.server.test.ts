@@ -102,7 +102,7 @@ describe("bookmarks loader", () => {
 
   it("ページ番号に上限を掛けて OFFSET を深く走らせない", async () => {
     // OFFSET は読み飛ばす行も走査されるため、上限が無いと `?page=99999` を並べるだけで
-    // D1 の日次読み取り枠を使い切れる（loader は GET なのでレートリミットも掛からない）。
+    // 読み取り負荷を際限なく増幅できる（loader は GET なのでレートリミットも掛からない）。
     const author = await createUser(app.env);
     const user = await createUser(app.env);
     for (let index = 0; index < 21; index += 1) {

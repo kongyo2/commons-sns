@@ -102,8 +102,8 @@ describe("profile loader", () => {
   });
 
   it("caps the page number so OFFSET cannot be driven arbitrarily deep", async () => {
-    // OFFSET は読み飛ばす行も走査されるため、上限が無いと `?page=99999` を並べるだけで
-    // D1 の日次読み取り枠を使い切れる（loader は GET なのでレートリミットも掛からない）。
+    // OFFSET は読み飛ばす行も実際に走査されるため、上限が無いと `?page=99999` を並べるだけで
+    // 読み取り負荷を際限なく増幅できる（loader は GET なのでレートリミットも掛からない）。
     const user = await createUser(app.env, { handle: "capped" });
     await createPost(app.env, { authorId: user.id });
 
