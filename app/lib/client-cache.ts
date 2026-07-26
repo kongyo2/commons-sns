@@ -146,6 +146,8 @@ export function createIndexedDbStore(): CacheStore | null {
 let resolvedStore: CacheStore | null | undefined;
 /** 最後にサーバーから受け取った閲覧者 ID のヒント。 */
 let lastViewer: string = GUEST_OWNER;
+/** このタブが閲覧者ヒントを最後に観測した時刻（タブ間の新旧比較用）。 */
+let lastViewerAt = 0;
 /** 直近の書き込み操作の時刻。これ以前のレコードは信用しない。 */
 let lastMutationAt = 0;
 /** 次回だけキャッシュを無視するキー。 */
@@ -154,40 +156,68 @@ const bypassKeys = new Set<string>();
 /**
  * 閲覧者ヒントと書き込み時刻の localStorage キー。
  *
- * IndexedDB のレコードは最長24時間残るのに、この2つがモジュールメモリにしか無いと
- * リロードで消えてしまう。すると (1) 書き込み直後にリロード → 書き込み前のレコードが
- * 鮮度ウィンドウ内なら再び「新鮮」扱いになる、(2) 別タブでログインしてからの初回
- * クライアント遷移が guest 所有のレコードを拾う、という2つの取りこぼしが起こる。
- * レコードと寿命をそろえるため、この2つは localStorage にも書いておく。
+ * IndexedDB のレコードは最長24時間残るうえタブ間で共有されるのに、この2つが
+ * モジュールメモリにしか無いと (1) 書き込み直後のリロードで無効化の記録が消える、
+ * (2) 別タブで起きた投稿・ログインをこのタブが観測できない、という取りこぼしが
+ * 起こる。レコードと寿命・共有範囲をそろえるため localStorage に置き、
+ * 読み書きの入り口ごとに合流（マージ）する。
  */
 const PERSIST_KEY = "commons-sns-view-cache-state";
-/** 永続化した状態を読み込んだか。モジュール初期化ごとに一度だけ読む。 */
-let persistedLoaded = false;
 
-/** localStorage が使えない環境（SSR・プライベートモード等）では黙って諦める。 */
-function persistState(): void {
+type PersistedCacheState = { viewer: string; viewerAt: number; mutationAt: number };
+
+/** 保存値を読む。無い・壊れている・localStorage が使えない環境は null。 */
+function readPersistedState(): PersistedCacheState | null {
   try {
-    if (typeof localStorage === "undefined") return;
-    localStorage.setItem(PERSIST_KEY, JSON.stringify({ viewer: lastViewer, mutationAt: lastMutationAt }));
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(PERSIST_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PersistedCacheState>;
+    if (typeof parsed.viewer !== "string") return null;
+    if (typeof parsed.mutationAt !== "number" || !Number.isFinite(parsed.mutationAt)) return null;
+    const viewerAt = typeof parsed.viewerAt === "number" && Number.isFinite(parsed.viewerAt) ? parsed.viewerAt : 0;
+    return { viewer: parsed.viewer, viewerAt, mutationAt: parsed.mutationAt };
   } catch {
-    // 容量超過やプライベートモード。メモリ内の値だけで従来どおり動く。
+    // 壊れた値・プライベートモード。メモリ内の値だけで従来どおり動く。
+    return null;
   }
 }
 
-function loadPersistedState(): void {
-  if (persistedLoaded) return;
-  persistedLoaded = true;
+/**
+ * 保存値とメモリ内の状態を合流させる。読み書きの入り口ごとに呼ぶ。
+ *
+ * **一度きりの読み込みでは足りない。** 開きっぱなしのタブは、別タブの投稿や
+ * ログアウトが書いた新しい記録を観測できず、共有 IndexedDB の古いレコードを
+ * 「新鮮」として返してしまう。書き込み時刻は大きいほう、閲覧者ヒントは
+ * 観測時刻が新しいほうを採用する。
+ */
+function syncPersistedState(): void {
+  const persisted = readPersistedState();
+  if (!persisted) return;
+  lastMutationAt = Math.max(lastMutationAt, persisted.mutationAt);
+  if (persisted.viewerAt > lastViewerAt) {
+    lastViewer = persisted.viewer;
+    lastViewerAt = persisted.viewerAt;
+  }
+}
+
+/**
+ * メモリ内の状態を保存する。
+ *
+ * 自分の値で単純に上書きすると、古いタブが新しいタブの記録を巻き戻せてしまう
+ * （巻き戻った無効化時刻は、リロード後に古いレコードを復活させる）。
+ * 必ず現在の保存値と合流してから書く。localStorage が無い環境では黙って諦める。
+ */
+function persistState(): void {
   try {
     if (typeof localStorage === "undefined") return;
-    const raw = localStorage.getItem(PERSIST_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as { viewer?: unknown; mutationAt?: unknown };
-    if (typeof parsed.viewer === "string") lastViewer = parsed.viewer;
-    if (typeof parsed.mutationAt === "number" && Number.isFinite(parsed.mutationAt)) {
-      lastMutationAt = Math.max(lastMutationAt, parsed.mutationAt);
-    }
+    syncPersistedState();
+    localStorage.setItem(
+      PERSIST_KEY,
+      JSON.stringify({ viewer: lastViewer, viewerAt: lastViewerAt, mutationAt: lastMutationAt }),
+    );
   } catch {
-    // 壊れた値は無視する（次の書き込みで上書きされる）。
+    // 容量超過やプライベートモード。メモリ内の値だけで従来どおり動く。
   }
 }
 
@@ -206,8 +236,8 @@ function activeStore(): CacheStore | null {
 export function setCacheStoreForTests(next: CacheStore | null): void {
   resolvedStore = next;
   lastViewer = GUEST_OWNER;
+  lastViewerAt = 0;
   lastMutationAt = 0;
-  persistedLoaded = false;
   bypassKeys.clear();
 }
 
@@ -218,7 +248,7 @@ export function setCacheStoreForTests(next: CacheStore | null): void {
  * （他人のレコードは読まれる前に捨てられ、サーバーへ取りに行く）。
  */
 export function viewerHint(): string {
-  loadPersistedState();
+  syncPersistedState();
   return lastViewer;
 }
 
@@ -229,7 +259,6 @@ export function viewerHint(): string {
  * これが無いと「投稿したのに 30 秒間タイムラインに出ない」不具合になる。
  */
 export function noteMutation(at: number = Date.now()): void {
-  loadPersistedState();
   lastMutationAt = Math.max(lastMutationAt, at);
   persistState();
 }
@@ -252,7 +281,7 @@ export function isMutationStart(previousPending: boolean, pending: boolean): boo
 export async function readCachedView<T>(key: string, owner: string): Promise<{ payload: T; savedAt: number } | null> {
   const active = activeStore();
   if (!active) return null;
-  loadPersistedState();
+  syncPersistedState();
   try {
     const record = await active.get(key);
     if (!record) return null;
@@ -291,8 +320,9 @@ export async function writeCachedView(
   payload: unknown,
   fetchStartedAt: number = Date.now(),
 ): Promise<void> {
-  loadPersistedState();
+  syncPersistedState();
   lastViewer = owner;
+  lastViewerAt = Date.now();
   persistState();
   // 時刻はミリ秒精度しか無いので、書き込みと同じミリ秒に始まった取得も
   // 安全側に倒して保存しない（書き込み前の応答を新鮮扱いしないため）。
@@ -313,10 +343,9 @@ export async function writeCachedView(
  * 「これまでのレコードは無効」を即座に成立させる。
  */
 export async function clearCache(): Promise<void> {
-  // noteMutation より先に永続状態を読み込み終えておく。逆順だと、読み込みが
-  // いま設定した guest ヒントを保存済みの値で上書きしてしまう。
-  loadPersistedState();
+  syncPersistedState();
   lastViewer = GUEST_OWNER;
+  lastViewerAt = Date.now();
   noteMutation();
   const active = activeStore();
   if (!active) return;

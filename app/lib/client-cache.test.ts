@@ -550,6 +550,48 @@ describe("状態の永続化（リロードまたぎ）", () => {
     expect(await readCachedView("bookmarks:1", "user_1")).not.toBeNull();
   });
 
+  it("開きっぱなしのタブでも、別タブの書き込み記録を読むたびに合流する", async () => {
+    const fake = createFakeLocalStorage();
+    vi.stubGlobal("localStorage", fake);
+    const store = createMemoryStore();
+    setCacheStoreForTests(store);
+    // このタブは一度読み込みを済ませている（＝一度きりの読み込みでは以後を見ない状態）。
+    expect(viewerHint()).toBe(GUEST_OWNER);
+    seed(store, { key: "bookmarks:1", savedAt: Date.now() });
+
+    // 別タブが投稿を検知して、より新しい無効化時刻を書き込んだ想定。
+    fake.setItem(
+      "commons-sns-view-cache-state",
+      JSON.stringify({ viewer: "user_1", viewerAt: Date.now(), mutationAt: Date.now() + 5 }),
+    );
+
+    expect(await readCachedView("bookmarks:1", "user_1")).toBeNull();
+  });
+
+  it("古いタブの保存が、別タブの新しい記録を巻き戻さない", async () => {
+    const fake = createFakeLocalStorage();
+    vi.stubGlobal("localStorage", fake);
+    const store = createMemoryStore();
+    setCacheStoreForTests(store);
+    const base = Date.now();
+    noteMutation(base - 60_000);
+
+    // 別タブがより新しい無効化時刻を書き込んだ想定。
+    fake.setItem(
+      "commons-sns-view-cache-state",
+      JSON.stringify({ viewer: "user_1", viewerAt: base, mutationAt: base + 60_000 }),
+    );
+
+    // このタブの保存（writeCachedView 経由）が単純上書きだと base - 60_000 に巻き戻る。
+    await writeCachedView("bookmarks:1", "user_1", { posts: [] });
+
+    const stored = JSON.parse(fake.getItem("commons-sns-view-cache-state") ?? "{}") as { mutationAt?: number };
+    expect(stored.mutationAt).toBe(base + 60_000);
+    // 合流した記録はこのタブにも反映され、それより古いレコードは使われない。
+    seed(store, { key: "timeline:recommended", savedAt: base + 30_000 });
+    expect(await readCachedView("timeline:recommended", "user_1")).toBeNull();
+  });
+
   it("壊れた永続値は無視して既定値から始める", () => {
     const fake = createFakeLocalStorage();
     fake.setItem("commons-sns-view-cache-state", "{not json");

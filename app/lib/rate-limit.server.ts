@@ -21,10 +21,15 @@ export type RateLimitVerdict = { allowed: boolean; retryAfterSeconds: number };
 export const RATE_LIMITS = {
   /** 登録: IP あたり 3件/時 */
   signup: { capacity: 3, refillPerSecond: 3 / 3_600 },
-  /** ログイン試行: IP あたり 10回/10分 */
+  /**
+   * ログイン試行: IP あたり 10回/10分。
+   *
+   * 対象アカウント単位の枠は**意図的に持たない**。試行の時点で消費する口座単位の
+   * バケツは、第三者がわざと間違ったパスワードを投げ続けるだけで正規の持ち主まで
+   * 締め出せてしまう（ログインDoS）。失敗だけを数えて成功を通す形にするには
+   * isolate をまたぐ永続的な失敗記録が必要になるため、ここでは扱わない。
+   */
   login: { capacity: 10, refillPerSecond: 10 / 600 },
-  /** ログイン試行: 対象アカウントあたり 20回/10分（送信元を分散した総当たり対策） */
-  loginHandle: { capacity: 20, refillPerSecond: 20 / 600 },
   /** 投稿: ユーザーあたり 10件/分 */
   post: { capacity: 10, refillPerSecond: 10 / 60 },
   /** リアクション（削除もこの枠を共有）: ユーザーあたり 60回/分 */

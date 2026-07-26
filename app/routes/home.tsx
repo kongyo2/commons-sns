@@ -210,7 +210,12 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
   if (!/^[a-z0-9_]{3,20}$/.test(handle)) {
     return fail("IDは3〜20文字の半角英数字と_で入力してください。", 400, "signup");
   }
-  if (isReservedHandle(handle)) {
+  // 予約語はなりすまし防止のためのもの。運営者が ADMIN_HANDLE で明示した初期管理者名は
+  // 正当な利用者なので、そのハンドルに限って免除する（admin や owner のような予約語を
+  // 指定すると、免除なしではブートストラップが一度も成立しない）。取得後は UNIQUE
+  // 制約で二人目が取れないため、免除がなりすましの穴にはならない。
+  const bootstrapHandle = (env.ADMIN_HANDLE ?? "").trim().toLowerCase();
+  if (isReservedHandle(handle) && handle !== bootstrapHandle) {
     return fail("このIDは使用できません。", 400, "signup");
   }
   const displayNameLength = countCodePoints(displayName, 30);
@@ -244,15 +249,11 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
 
 async function handleLogin(env: AppEnv, ctx: ExecutionContext, formData: FormData, request: Request) {
   // 総当たり対策。PBKDF2 の検証は CPU を使うので、消費する前に判定する。
+  // 主体は IP のみ。対象アカウント単位の枠を設けない理由は `rate-limit.server.ts` を参照
+  // （試行時点で消費する口座単位の枠は、他人が正規の持ち主を締め出す道具になる）。
   const limited = enforceLimit("login", clientKey(request), "login");
   if (limited) return limited;
   const handle = formText(formData, "handle").toLowerCase().replace(/^@/, "");
-  // IP 単位だけだと、送信元を分散されれば1アカウントへ何度でも試せる。
-  // 対象ハンドル単位のバケツも消費して、アカウントごとの試行回数を絞る。
-  if (handle) {
-    const limitedHandle = enforceLimit("loginHandle", handle, "login");
-    if (limitedHandle) return limitedHandle;
-  }
   const password = String(formData.get("password") ?? "");
   if (password.length < 8 || password.length > 128) {
     return fail("IDまたはパスワードが違います。", 401, "login");

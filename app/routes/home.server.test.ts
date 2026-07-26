@@ -539,6 +539,34 @@ describe("invite code", () => {
   });
 });
 
+describe("初期管理者ブートストラップ（ADMIN_HANDLE）", () => {
+  const fields = { intent: "signup", displayName: "運営", password: "password123" };
+  /** ADMIN_HANDLE を設定した env。生成型は空文字リテラルなので二段キャストで差し替える。 */
+  const adminEnv = () => ({ ...app.env, ADMIN_HANDLE: "admin" }) as unknown as typeof app.env;
+
+  it("ADMIN_HANDLE に指定した予約語ハンドルだけは登録でき、admin に昇格する", async () => {
+    // admin は予約語。免除が無いと isReservedHandle が先に弾いて、
+    // ブートストラップは一度も成立しない。
+    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "Admin" }), adminEnv());
+    expect(expectRedirect(result).location).toBe("/");
+
+    const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'admin'").first<{ role: string }>();
+    expect(row?.role).toBe("admin");
+  });
+
+  it("指定と異なる予約語ハンドルは従来どおり拒否する", async () => {
+    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "owner" }), adminEnv());
+    const { data, status } = expectData<ActionResult>(result);
+    expect(status).toBe(400);
+    expect(data.error).toBe("このIDは使用できません。");
+  });
+
+  it("ADMIN_HANDLE が未設定なら予約語の免除は起きない", async () => {
+    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "admin" }));
+    expect(expectData<ActionResult>(result).status).toBe(400);
+  });
+});
+
 describe("rate limits", () => {
   const signupFields = { intent: "signup", displayName: "新人", password: "password123" };
 
@@ -564,20 +592,6 @@ describe("rate limits", () => {
 
     const result = await callAction(
       formRequest(URL_HOME, { intent: "login", handle: "member", password: "secret pass 9" }),
-    );
-    const { data, status } = expectData<ActionResult>(result);
-    expect(status).toBe(429);
-    expect(data.form).toBe("login");
-    expect(retryAfterOf(result)).not.toBeNull();
-  });
-
-  it("stops brute-forced logins against one account even from fresh source addresses", async () => {
-    // IP 単位のバケツだけだと、送信元を変えるたびに上限がリセットされる。
-    await createUser(app.env, { handle: "member", password: "secret pass 9" });
-    for (let index = 0; index < RATE_LIMITS.loginHandle.capacity; index += 1) consumeToken("loginHandle", "member");
-
-    const result = await callAction(
-      formRequest(URL_HOME, { intent: "login", handle: "@Member", password: "secret pass 9" }, { ip: "203.0.113.42" }),
     );
     const { data, status } = expectData<ActionResult>(result);
     expect(status).toBe(429);
