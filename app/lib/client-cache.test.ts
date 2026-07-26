@@ -161,6 +161,24 @@ describe("readCachedView / writeCachedView", () => {
     expect(await readCachedView("timeline:recommended", "user_1")).not.toBeNull();
   });
 
+  it("書き込みと同じミリ秒に保存されたレコードは安全側に倒して捨てる", async () => {
+    // Date.now() はミリ秒精度しか無いので、同時刻は「書き込み前」かもしれない。
+    const at = Date.now();
+    seed(store, { key: "timeline:recommended", savedAt: at });
+    noteMutation(at);
+
+    expect(await readCachedView("timeline:recommended", "user_1")).toBeNull();
+  });
+
+  it("書き込みと同じミリ秒に始めた取得の結果は保存しない", async () => {
+    const at = Date.now();
+    noteMutation(at);
+
+    await writeCachedView("timeline:recommended", "user_1", { posts: [] }, at);
+
+    expect(store.records.size).toBe(0);
+  });
+
   it("読み取りが失敗しても例外にせず null を返す", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     setCacheStoreForTests({ ...store, get: () => Promise.reject(new Error("boom")) });
@@ -193,6 +211,10 @@ describe("isMutationStart", () => {
     const store = createMemoryStore();
     setCacheStoreForTests(store);
     const key = cacheKeys.timeline("recommended");
+    // 同一ミリ秒の取得は安全側に倒して保存しない仕様なので、実際の流れどおり
+    // 「送信 → （actionの往復を挟んで）再検証」の時間差を時計で再現する。
+    const base = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(base);
 
     // 1. 送信の立ち上がり（idle → pending）で無効化を記録する。
     let pending = false;
@@ -203,6 +225,7 @@ describe("isMutationStart", () => {
     observe(true);
 
     // 2. action の完了に続く再検証。取得の開始も保存も、記録より後の時刻になる。
+    clock.mockReturnValue(base + 5);
     const fetchStartedAt = Date.now();
     await writeCachedView(key, "user_1", { posts: [1] }, fetchStartedAt);
 
@@ -452,5 +475,87 @@ describe("createIndexedDbStore", () => {
     expect(await createIndexedDbStore()?.get("bookmarks")).toBeUndefined();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("状態の永続化（リロードまたぎ）", () => {
+  /** メモリ実装の localStorage。テスト内でリロードをまたぐ持ち越しを再現する。 */
+  function createFakeLocalStorage(): Storage {
+    const map = new Map<string, string>();
+    return {
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => void map.set(key, value),
+      removeItem: (key: string) => void map.delete(key),
+      clear: () => map.clear(),
+      key: () => null,
+      get length() {
+        return map.size;
+      },
+    } as Storage;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("書き込み時刻がリロード後も残り、書き込み前のレコードを退ける", async () => {
+    vi.stubGlobal("localStorage", createFakeLocalStorage());
+    const store = createMemoryStore();
+    setCacheStoreForTests(store);
+    seed(store, { key: "bookmarks:1", savedAt: Date.now() - 1_000 });
+    // ブックマーク解除などの送信を検知した想定。
+    noteMutation();
+
+    // リロード（モジュール状態の初期化）を再現する。IndexedDB 側の中身はそのまま。
+    setCacheStoreForTests(store);
+
+    // メモリだけの管理だとここで記録が消え、古いレコードが「新鮮」扱いに戻ってしまう。
+    expect(await readCachedView("bookmarks:1", "user_1")).toBeNull();
+  });
+
+  it("閲覧者ヒントがリロード後も残り、guest のレコードを拾わない", async () => {
+    vi.stubGlobal("localStorage", createFakeLocalStorage());
+    const store = createMemoryStore();
+    setCacheStoreForTests(store);
+    // ログイン中の取得で閲覧者ヒントが user_9 になった想定。
+    await writeCachedView(cacheKeys.profile("someone", 1), "user_9", { ok: true });
+    // 未ログイン時代のレコードが残っていた想定。
+    seed(store, { key: cacheKeys.timeline("recommended"), owner: GUEST_OWNER });
+
+    setCacheStoreForTests(store);
+
+    expect(viewerHint()).toBe("user_9");
+    // ヒントが guest に戻っていると、この読み取りが guest のレコードを「新鮮」として返してしまう。
+    expect(await readCachedView(cacheKeys.timeline("recommended"), viewerHint())).toBeNull();
+  });
+
+  it("clearCache は guest ヒントを永続化し、リロード後も引き継ぐ", async () => {
+    vi.stubGlobal("localStorage", createFakeLocalStorage());
+    const store = createMemoryStore();
+    setCacheStoreForTests(store);
+    await writeCachedView("bookmarks:1", "user_9", { posts: [] });
+
+    await clearCache();
+    setCacheStoreForTests(store);
+
+    expect(viewerHint()).toBe(GUEST_OWNER);
+  });
+
+  it("localStorage が無い環境（SSR・Node）では従来どおり動く", async () => {
+    const store = createMemoryStore();
+    setCacheStoreForTests(store);
+
+    await writeCachedView("bookmarks:1", "user_1", { posts: [] });
+
+    expect(await readCachedView("bookmarks:1", "user_1")).not.toBeNull();
+  });
+
+  it("壊れた永続値は無視して既定値から始める", () => {
+    const fake = createFakeLocalStorage();
+    fake.setItem("commons-sns-view-cache-state", "{not json");
+    vi.stubGlobal("localStorage", fake);
+    setCacheStoreForTests(createMemoryStore());
+
+    expect(viewerHint()).toBe(GUEST_OWNER);
   });
 });

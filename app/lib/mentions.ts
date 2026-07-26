@@ -40,13 +40,22 @@ export function extractMentions(body: string): string[] {
 }
 
 /** 本文をメンション部分とそれ以外に分割した結果。 */
-export type BodySegment = { type: "text"; value: string } | { type: "mention"; handle: string };
+export type BodySegment =
+  | { type: "text"; value: string }
+  | {
+      type: "mention";
+      /** 正規化（小文字化）済みのハンドル。リンク先 URL や照合に使う。 */
+      handle: string;
+      /** 本文に書かれたままの表記（`@` は含まない）。表示に使う。 */
+      text: string;
+    };
 
 /**
  * 本文をメンション部分とそれ以外に分割する（表示用）。
  *
  * `extractMentions` と違い、件数の上限も重複の除去も行わない
- * （本文の見た目は本文どおりでなければならない）。
+ * （本文の見た目は本文どおりでなければならない）。表示用の `text` には
+ * 大文字小文字を含め入力どおりの表記を残し、正規化は `handle` 側だけで行う。
  */
 export function splitBodySegments(body: string): BodySegment[] {
   const segments: BodySegment[] = [];
@@ -55,7 +64,7 @@ export function splitBodySegments(body: string): BodySegment[] {
     // match[1] は「直前の1文字」なので、@ の位置は match.index + match[1].length。
     const start = (match.index ?? 0) + match[1].length;
     if (start > cursor) segments.push({ type: "text", value: body.slice(cursor, start) });
-    segments.push({ type: "mention", handle: match[2].toLowerCase() });
+    segments.push({ type: "mention", handle: match[2].toLowerCase(), text: match[2] });
     cursor = start + match[2].length + 1;
   }
   if (cursor < body.length) segments.push({ type: "text", value: body.slice(cursor) });

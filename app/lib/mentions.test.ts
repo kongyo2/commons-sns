@@ -41,14 +41,23 @@ describe("splitBodySegments", () => {
   it("メンションとテキストへ分割する", () => {
     expect(splitBodySegments("やあ @demo_aoi さん")).toEqual([
       { type: "text", value: "やあ " },
-      { type: "mention", handle: "demo_aoi" },
+      { type: "mention", handle: "demo_aoi", text: "demo_aoi" },
       { type: "text", value: " さん" },
     ]);
   });
 
   it("行頭のメンションでは空のテキスト断片を作らない", () => {
     expect(splitBodySegments("@demo_aoi さん")).toEqual([
-      { type: "mention", handle: "demo_aoi" },
+      { type: "mention", handle: "demo_aoi", text: "demo_aoi" },
+      { type: "text", value: " さん" },
+    ]);
+  });
+
+  it("表示用の表記は本文のまま残し、handle だけを正規化する", () => {
+    // 大文字混じりで書かれたメンションを小文字に置き換えて表示すると、
+    // 投稿者が書いた本文と表示が食い違う。
+    expect(splitBodySegments("@Demo_Aoi さん")).toEqual([
+      { type: "mention", handle: "demo_aoi", text: "Demo_Aoi" },
       { type: "text", value: " さん" },
     ]);
   });
@@ -56,7 +65,7 @@ describe("splitBodySegments", () => {
   it("末尾のメンションで終わる本文を扱える", () => {
     expect(splitBodySegments("よろしく @demo_yuu")).toEqual([
       { type: "text", value: "よろしく " },
-      { type: "mention", handle: "demo_yuu" },
+      { type: "mention", handle: "demo_yuu", text: "demo_yuu" },
     ]);
   });
 

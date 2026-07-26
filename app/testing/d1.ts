@@ -160,9 +160,16 @@ export async function addReaction(
     .run();
 }
 
-export async function addFollow(env: AppEnv, followerId: string, followingId: string) {
-  await env.DB.prepare("INSERT INTO follows (follower_id, following_id) VALUES (?, ?)")
-    .bind(followerId, followingId)
+export async function addFollow(
+  env: AppEnv,
+  followerId: string,
+  followingId: string,
+  options: { createdAt?: string } = {},
+) {
+  await env.DB.prepare(
+    "INSERT INTO follows (follower_id, following_id, created_at) VALUES (?, ?, COALESCE(?, datetime('now')))",
+  )
+    .bind(followerId, followingId, options.createdAt ?? null)
     .run();
 }
 

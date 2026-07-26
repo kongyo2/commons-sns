@@ -198,9 +198,16 @@ type FollowListRow = {
 /**
  * フォロー中／フォロワーの一覧を取得する。
  *
- * 並びは主キー順（following は `following_id` 昇順 / followers は `follower_id` 昇順）。
- * `created_at` 順にすると `follows` に索引を1本足すことになり、フォロー1回あたりの
- * 書き込み行が増える。小規模インスタンスでは並び順より安さを取る。
+ * 並びは**既存の索引がそのまま提供できる順序**に合わせる。索引で満たせない ORDER BY を
+ * 書くと、SQLite は LIMIT を掛ける前に該当行を全部集めて並べ替えるため、公開ページの
+ * 1リクエストがそのユーザーのフォロー関係の総数に比例してしまう。
+ *
+ * - following: 主キー `(follower_id, following_id)` を先頭一致で走査 → `following_id` 昇順
+ * - followers: `follows_following_idx (following_id, created_at DESC)` を走査 → 新しい順
+ *
+ * followers 側の `created_at` は秒精度なので、同秒のフォローが続くと OFFSET の境界で
+ * 行が重複・欠落しうる。並べ替え列を足して安定させると索引で順序を満たせなくなるので、
+ * まれな表示ゆらぎのほうを受け入れる。
  *
  * 相互表示（フォローボタンの初期状態）は、取得した相手 ID を1クエリでまとめて引く
  * （バインドは 1 + ページ件数 = 最大 91 個で、D1 の上限 100 に収まる）。
@@ -228,7 +235,7 @@ export async function getFollowList(
       : `SELECT u.id, u.handle, u.display_name, u.bio, u.avatar_key, u.role
            FROM follows f JOIN users u ON u.id = f.follower_id
           WHERE f.following_id = ?
-          ORDER BY f.follower_id
+          ORDER BY f.created_at DESC
           LIMIT ? OFFSET ?`;
 
   const result = await env.DB.prepare(sql)

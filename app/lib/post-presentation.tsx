@@ -165,10 +165,11 @@ export function PostBody({ body, className }: { body: string; className?: string
   let offset = 0;
   const nodes = splitBodySegments(body).map((segment) => {
     const start = offset;
-    offset += segment.type === "mention" ? segment.handle.length + 1 : segment.value.length;
+    offset += segment.type === "mention" ? segment.text.length + 1 : segment.value.length;
+    // 表示は本文に書かれたままの表記（segment.text）。リンク先だけ正規化済みハンドルを使う。
     return segment.type === "mention" ? (
       <Link key={`m${start}`} to={`/users/${encodeURIComponent(segment.handle)}`} state={linkState} className="mention">
-        @{segment.handle}
+        @{segment.text}
       </Link>
     ) : (
       <Fragment key={`t${start}`}>{segment.value}</Fragment>

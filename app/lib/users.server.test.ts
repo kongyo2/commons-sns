@@ -225,6 +225,22 @@ describe("getFollowList", () => {
     expect(followers.entries[0].viewerFollows).toBe(true);
   });
 
+  it("フォロワーは新しい順（既存索引の順序）で返す", async () => {
+    // followers 側の並びは follows_following_idx (following_id, created_at DESC) に
+    // そのまま乗せる。索引で満たせない並びにすると、LIMIT の前に全フォロワーを
+    // 集めて並べ替えることになり、公開ページの読み取りが総数に比例してしまう。
+    const owner = await createUser(app.env, { id: "fo_owner", handle: "fo_owner" });
+    const oldest = await createUser(app.env, { id: "fo_oldest", handle: "fo_oldest" });
+    const middle = await createUser(app.env, { id: "fo_middle", handle: "fo_middle" });
+    const newest = await createUser(app.env, { id: "fo_newest", handle: "fo_newest" });
+    await addFollow(app.env, oldest.id, owner.id, { createdAt: "2026-06-01 10:00:00" });
+    await addFollow(app.env, middle.id, owner.id, { createdAt: "2026-06-02 10:00:00" });
+    await addFollow(app.env, newest.id, owner.id, { createdAt: "2026-06-03 10:00:00" });
+
+    const followers = await getFollowList(app.env, owner.id, "followers", null);
+    expect(followers.entries.map((entry) => entry.id)).toEqual(["fo_newest", "fo_middle", "fo_oldest"]);
+  });
+
   it("閲覧者がフォローしていない相手には viewerFollows を立てない", async () => {
     const owner = await createUser(app.env, { id: "fl_owner", handle: "fl_owner" });
     const target = await createUser(app.env, { id: "fl_target", handle: "fl_target" });

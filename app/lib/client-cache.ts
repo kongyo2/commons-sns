@@ -146,10 +146,50 @@ export function createIndexedDbStore(): CacheStore | null {
 let resolvedStore: CacheStore | null | undefined;
 /** 最後にサーバーから受け取った閲覧者 ID のヒント。 */
 let lastViewer: string = GUEST_OWNER;
-/** 直近の書き込み操作の時刻。これより前のレコードは信用しない。 */
+/** 直近の書き込み操作の時刻。これ以前のレコードは信用しない。 */
 let lastMutationAt = 0;
 /** 次回だけキャッシュを無視するキー。 */
 const bypassKeys = new Set<string>();
+
+/**
+ * 閲覧者ヒントと書き込み時刻の localStorage キー。
+ *
+ * IndexedDB のレコードは最長24時間残るのに、この2つがモジュールメモリにしか無いと
+ * リロードで消えてしまう。すると (1) 書き込み直後にリロード → 書き込み前のレコードが
+ * 鮮度ウィンドウ内なら再び「新鮮」扱いになる、(2) 別タブでログインしてからの初回
+ * クライアント遷移が guest 所有のレコードを拾う、という2つの取りこぼしが起こる。
+ * レコードと寿命をそろえるため、この2つは localStorage にも書いておく。
+ */
+const PERSIST_KEY = "commons-sns-view-cache-state";
+/** 永続化した状態を読み込んだか。モジュール初期化ごとに一度だけ読む。 */
+let persistedLoaded = false;
+
+/** localStorage が使えない環境（SSR・プライベートモード等）では黙って諦める。 */
+function persistState(): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(PERSIST_KEY, JSON.stringify({ viewer: lastViewer, mutationAt: lastMutationAt }));
+  } catch {
+    // 容量超過やプライベートモード。メモリ内の値だけで従来どおり動く。
+  }
+}
+
+function loadPersistedState(): void {
+  if (persistedLoaded) return;
+  persistedLoaded = true;
+  try {
+    if (typeof localStorage === "undefined") return;
+    const raw = localStorage.getItem(PERSIST_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as { viewer?: unknown; mutationAt?: unknown };
+    if (typeof parsed.viewer === "string") lastViewer = parsed.viewer;
+    if (typeof parsed.mutationAt === "number" && Number.isFinite(parsed.mutationAt)) {
+      lastMutationAt = Math.max(lastMutationAt, parsed.mutationAt);
+    }
+  } catch {
+    // 壊れた値は無視する（次の書き込みで上書きされる）。
+  }
+}
 
 function activeStore(): CacheStore | null {
   if (resolvedStore === undefined) resolvedStore = createIndexedDbStore();
@@ -160,32 +200,38 @@ function activeStore(): CacheStore | null {
  * テスト用のストア差し替え。null を渡すと「IndexedDB が使えない環境」を再現する。
  *
  * モジュール変数（閲覧者ヒント・書き込み時刻・バイパス）もあわせて初期化するので、
- * テストごとにこれを呼べば独立した状態から始められる。
+ * テストごとにこれを呼べば独立した状態から始められる。永続化の読み込みフラグも
+ * 戻すため、localStorage を差し込んだテストでは「リロード直後」を再現できる。
  */
 export function setCacheStoreForTests(next: CacheStore | null): void {
   resolvedStore = next;
   lastViewer = GUEST_OWNER;
   lastMutationAt = 0;
+  persistedLoaded = false;
   bypassKeys.clear();
 }
 
 /**
  * 最後に観測した閲覧者 ID。ルートはこれを {@link readCachedView} の owner に渡す。
  *
- * ヒントがずれていても、レコード側の owner 比較が最終防衛線として働くので情報は漏れない。
+ * ヒントがずれていても、レコード側の owner 比較が最終防衛線として働くので情報は漏れない
+ * （他人のレコードは読まれる前に捨てられ、サーバーへ取りに行く）。
  */
 export function viewerHint(): string {
+  loadPersistedState();
   return lastViewer;
 }
 
 /**
  * 直近の書き込み操作の時刻を記録する。
  *
- * これより前に保存されたキャッシュは投稿・いいね・ログインの結果を反映していないので使わない。
+ * これ以前に保存されたキャッシュは投稿・いいね・ログインの結果を反映していないので使わない。
  * これが無いと「投稿したのに 30 秒間タイムラインに出ない」不具合になる。
  */
 export function noteMutation(at: number = Date.now()): void {
+  loadPersistedState();
   lastMutationAt = Math.max(lastMutationAt, at);
+  persistState();
 }
 
 /**
@@ -206,6 +252,7 @@ export function isMutationStart(previousPending: boolean, pending: boolean): boo
 export async function readCachedView<T>(key: string, owner: string): Promise<{ payload: T; savedAt: number } | null> {
   const active = activeStore();
   if (!active) return null;
+  loadPersistedState();
   try {
     const record = await active.get(key);
     if (!record) return null;
@@ -218,8 +265,9 @@ export async function readCachedView<T>(key: string, owner: string): Promise<{ p
       await active.delete(key);
       return null;
     }
-    // 書き込みより古い表示は正しくないので捨てる。
-    if (record.savedAt < lastMutationAt) {
+    // 書き込みより古い表示は正しくないので捨てる。時刻はミリ秒精度しか無いので、
+    // 同時刻（＝書き込みと同じミリ秒に保存されたレコード）も安全側に倒して捨てる。
+    if (record.savedAt <= lastMutationAt) {
       await active.delete(key);
       return null;
     }
@@ -243,8 +291,12 @@ export async function writeCachedView(
   payload: unknown,
   fetchStartedAt: number = Date.now(),
 ): Promise<void> {
+  loadPersistedState();
   lastViewer = owner;
-  if (fetchStartedAt < lastMutationAt) return;
+  persistState();
+  // 時刻はミリ秒精度しか無いので、書き込みと同じミリ秒に始まった取得も
+  // 安全側に倒して保存しない（書き込み前の応答を新鮮扱いしないため）。
+  if (fetchStartedAt <= lastMutationAt) return;
   const active = activeStore();
   if (!active) return;
   try {
@@ -261,6 +313,9 @@ export async function writeCachedView(
  * 「これまでのレコードは無効」を即座に成立させる。
  */
 export async function clearCache(): Promise<void> {
+  // noteMutation より先に永続状態を読み込み終えておく。逆順だと、読み込みが
+  // いま設定した guest ヒントを保存済みの値で上書きしてしまう。
+  loadPersistedState();
   lastViewer = GUEST_OWNER;
   noteMutation();
   const active = activeStore();

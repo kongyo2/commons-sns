@@ -189,6 +189,12 @@ describe("PostBody", () => {
     expect(html).toContain("mail@example.com");
   });
 
+  it("大文字混じりの表記は本文のまま表示し、リンク先だけ正規化する", () => {
+    const html = renderInRouter(<PostBody body="@Demo_Aoi さん" />);
+    expect(html).toContain('href="/users/demo_aoi"');
+    expect(html).toContain("@Demo_Aoi");
+  });
+
   it("メンションが無い本文はそのまま出す", () => {
     const html = renderInRouter(<PostBody body="ふつうの本文" />);
     expect(html).toContain("ふつうの本文");
