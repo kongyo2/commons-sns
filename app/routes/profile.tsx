@@ -9,6 +9,9 @@ import { PRESET_AVATARS, PresetAvatarSymbol } from "../lib/avatar-presets";
 import { avatarClass, normalizeDate, PostSummaryCard, UserAvatar } from "../lib/post-presentation";
 import { getUserPosts, type TimelinePost } from "../lib/posts.server";
 import { BIO_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_MIN_LENGTH } from "../lib/profile-constraints";
+import { consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
+import type { RateLimitName } from "../lib/rate-limit.server";
+import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { SubpageShell } from "../lib/subpage";
 import { countCodePoints, sanitizeText, sliceCodePoints } from "../lib/text";
 import {
@@ -26,7 +29,31 @@ export function meta() {
   return [{ title: "プロフィール — Commons" }];
 }
 
+/** レートリミットを1つ消費し、超過していれば 429 応答を返す。通過時は null。 */
+function enforceLimit(name: RateLimitName, subject: string) {
+  const verdict = consumeToken(name, subject);
+  if (verdict.allowed) return null;
+  return data<ActionResult>({ error: RATE_LIMIT_MESSAGE }, rateLimitResponseInit(verdict));
+}
+
 const PROFILE_PAGE_SIZE = 20;
+
+/**
+ * プロフィール投稿一覧の最大ページ番号。
+ *
+ * SQLite の OFFSET は読み飛ばす行も実際に走査するため、上限が無いと URL の `page` を
+ * 大きくするだけで1リクエストの読み取り行数が「その著者の生存投稿数」まで伸びる。
+ * loader は GET なのでレートリミットも掛かっておらず、無料枠の読み取り枠を
+ * 数百リクエストで使い切れてしまう。50 ページ = 最大 1,000 件で頭打ちにする。
+ */
+export const MAX_PROFILE_PAGE = 50;
+
+/** URL のページ番号を 1〜{@link MAX_PROFILE_PAGE} の整数に正規化する。 */
+function pageFromUrl(url: string) {
+  const requested = Number.parseInt(new URL(url).searchParams.get("page") ?? "1", 10);
+  if (!Number.isFinite(requested) || requested < 1) return 1;
+  return Math.min(requested, MAX_PROFILE_PAGE);
+}
 
 function handleFromParams(params: Route.LoaderArgs["params"]) {
   return String(params.handle ?? "")
@@ -42,8 +69,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   ]);
   if (!profile) throw data(null, { status: 404 });
 
-  const requestedPage = Number.parseInt(new URL(request.url).searchParams.get("page") ?? "1", 10);
-  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const page = pageFromUrl(request.url);
 
   let posts: TimelinePost[] = [];
   let hasNextPage = false;
@@ -58,7 +84,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       user && user.id !== profile.id ? isFollowing(env, user.id, profile.id) : false,
     ]);
     posts = fetchedPosts.slice(0, PROFILE_PAGE_SIZE);
-    hasNextPage = fetchedPosts.length > PROFILE_PAGE_SIZE;
+    // 上限ページでは「次へ」を出さない（出しても pageFromUrl が同じページへ丸める）。
+    hasNextPage = fetchedPosts.length > PROFILE_PAGE_SIZE && page < MAX_PROFILE_PAGE;
     viewerFollows = following;
   } catch (error) {
     console.error("Failed to load profile posts", error);
@@ -84,6 +111,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
  * @throws A 404 response when the profile handle does not identify an existing profile.
  */
 export async function action({ request, context, params }: Route.ActionArgs) {
+  // クロスサイト送信と過大な本文は、セッションを引く前に落とす（`request-guard.server.ts`）。
+  const rejected = crossSiteRejection(request);
+  if (rejected) return rejected;
+
   const { env } = context.get(cloudflareContext);
   const user = await getSessionUser(request, env);
   if (!user) return redirect("/?auth=login");
@@ -91,16 +122,14 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const profile = await getUserProfileByHandle(env, handleFromParams(params));
   if (!profile) throw data(null, { status: 404 });
 
-  let formData: FormData;
-  try {
-    formData = await request.formData();
-  } catch (error) {
-    console.error("profile action formData failed", error);
-    return data<ActionResult>({ error: "問題が発生しました。時間をおいてもう一度お試しください。" }, { status: 500 });
-  }
+  const body = await readFormDataBounded(request);
+  if (!body.ok) return data<ActionResult>({ error: body.message }, { status: body.status });
+  const formData = body.formData;
   const intent = String(formData.get("intent") ?? "");
 
   if (intent === "toggleFollow") {
+    const limited = enforceLimit("follow", user.id);
+    if (limited) return limited;
     if (profile.id === user.id) {
       return data<ActionResult>({ error: "自分をフォローすることはできません。" }, { status: 400 });
     }
@@ -114,6 +143,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   }
 
   if (intent === "updateProfile") {
+    const limited = enforceLimit("profile", user.id);
+    if (limited) return limited;
     if (profile.id !== user.id) {
       return data<ActionResult>({ error: "このプロフィールは編集できません。" }, { status: 403 });
     }

@@ -10,6 +10,8 @@ import {
   getSessionUser,
   verifyPasswordOrDummy,
 } from "../lib/auth.server";
+import { consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
+import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { SubpageShell } from "../lib/subpage";
 
 type ActionResult = { ok?: boolean; error?: string; form?: "password" | "delete" };
@@ -29,21 +31,30 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
+  // クロスサイト送信と過大な本文は、セッションを引く前に落とす（`request-guard.server.ts`）。
+  const rejected = crossSiteRejection(request);
+  if (rejected) return rejected;
+
   const { env } = context.get(cloudflareContext);
   const user = await getSessionUser(request, env);
   if (!user) return redirect("/?auth=login");
 
-  let formData: FormData;
-  try {
-    formData = await request.formData();
-  } catch (error) {
-    console.error("settings action formData failed", error);
-    return data<ActionResult>({ error: "問題が発生しました。時間をおいてもう一度お試しください。" }, { status: 500 });
-  }
+  const body = await readFormDataBounded(request);
+  if (!body.ok) return data<ActionResult>({ error: body.message }, { status: body.status });
+  const formData = body.formData;
   const intent = String(formData.get("intent") ?? "");
 
   if (intent === "logout") {
     return redirect("/", { headers: { "Set-Cookie": await destroySession(request, env) } });
+  }
+
+  if (intent === "changePassword" || intent === "deleteAccount") {
+    // どちらも PBKDF2 の導出を伴い CPU を強く使うので、実行前に絞る。
+    const verdict = consumeToken("credential", user.id);
+    if (!verdict.allowed) {
+      const form = intent === "changePassword" ? "password" : "delete";
+      return data<ActionResult>({ error: RATE_LIMIT_MESSAGE, form }, rateLimitResponseInit(verdict));
+    }
   }
   if (intent === "changePassword") return handleChangePassword(env, request, formData, user.handle, user.id);
   if (intent === "deleteAccount") return handleDeleteAccount(env, formData, user.handle, user.id);
