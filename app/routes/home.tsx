@@ -54,7 +54,7 @@ import { clientKey, consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } fr
 import type { RateLimitName } from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { countCodePoints, isReservedHandle, sanitizeText } from "../lib/text";
-import { createUserAccount } from "../lib/users.server";
+import { createUserAccount, deleteUserAccount, hasLoginCapableAdmin } from "../lib/users.server";
 
 type ActionResult = {
   ok?: boolean;
@@ -212,11 +212,17 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
   }
   // 予約語はなりすまし防止のためのもの。運営者が ADMIN_HANDLE で明示した初期管理者名は
   // 正当な利用者なので、そのハンドルに限って免除する（admin や owner のような予約語を
-  // 指定すると、免除なしではブートストラップが一度も成立しない）。取得後は UNIQUE
-  // 制約で二人目が取れないため、免除がなりすましの穴にはならない。
+  // 指定すると、免除なしではブートストラップが一度も成立しない）。
+  //
+  // ただし免除は「ブートストラップがまだ成立していない」間だけ。別のアカウントで
+  // 管理者が確立済みのインスタンスでこの免除を続けると、昇格しないただの利用者が
+  // 予約語ハンドル（例: @admin）を取れてしまい、なりすましの穴になる。
+  // 判定は createUserAccount の昇格条件とまったく同じものを使う。
   const bootstrapHandle = (env.ADMIN_HANDLE ?? "").trim().toLowerCase();
-  if (isReservedHandle(handle) && handle !== bootstrapHandle) {
-    return fail("このIDは使用できません。", 400, "signup");
+  const reservedForBootstrap = isReservedHandle(handle) && handle === bootstrapHandle;
+  if (isReservedHandle(handle)) {
+    const bootstrapOpen = reservedForBootstrap && !(await hasLoginCapableAdmin(env));
+    if (!bootstrapOpen) return fail("このIDは使用できません。", 400, "signup");
   }
   const displayNameLength = countCodePoints(displayName, 30);
   if (displayNameLength < 1 || displayNameLength > 30) {
@@ -243,6 +249,13 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
   }
   if (!created.ok) {
     return fail("そのIDはすでに使われています。", 409, "signup");
+  }
+  // 予約語の免除で入ったのに昇格しなかった＝上のチェックの直後に他のアカウントで
+  // 管理者が確立された（並行登録）。ただの利用者が予約語ハンドルを持つ状態は
+  // 作らせないので、作成した行を取り消す。
+  if (reservedForBootstrap && !created.promoted) {
+    await deleteUserAccount(env, created.userId);
+    return fail("このIDは使用できません。", 400, "signup");
   }
   return redirect("/", { headers: { "Set-Cookie": await createSession(env, created.userId, ctx) } });
 }

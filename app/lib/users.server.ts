@@ -82,7 +82,27 @@ export async function getUserProfileByHandle(env: AppEnv, handle: string): Promi
   };
 }
 
-export type CreateUserResult = { ok: true; userId: string } | { ok: false; reason: "handleTaken" };
+/**
+ * ログインできる admin が存在するか（初期管理者ブートストラップの成立判定）。
+ *
+ * シードの公式アカウントはパスワード無しの admin なので、素の role 判定では
+ * 「管理者としてログインする手段が無いのに成立済み」と誤判定してしまう。
+ */
+export async function hasLoginCapableAdmin(env: AppEnv): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "SELECT 1 AS present FROM users WHERE role = 'admin' AND password_hash IS NOT NULL LIMIT 1",
+  ).first<{ present: number }>();
+  return row !== null;
+}
+
+export type CreateUserResult =
+  | {
+      ok: true;
+      userId: string;
+      /** admin へ昇格したか（＝このアカウントでブートストラップが成立したか）。 */
+      promoted: boolean;
+    }
+  | { ok: false; reason: "handleTaken" };
 
 /**
  * アカウントを作成する。
@@ -111,16 +131,20 @@ export async function createUserAccount(
     (values.adminHandle ?? "").trim().toLowerCase() === values.handle.toLowerCase();
   const userId = crypto.randomUUID();
   try {
-    await env.DB.prepare(
+    // 昇格の判定は INSERT と同じ文の中で行う（別クエリで確かめてから書くと、
+    // その隙間に他の管理者が確立されうる）。RETURNING で実際に入った role を受け取る。
+    const inserted = await env.DB.prepare(
       `INSERT INTO users (id, handle, display_name, password_hash, password_salt, role)
        SELECT ?, ?, ?, ?, ?,
               CASE WHEN ? = 1 AND NOT EXISTS (
                      SELECT 1 FROM users WHERE role = 'admin' AND password_hash IS NOT NULL
                    )
-                   THEN 'admin' ELSE 'user' END`,
+                   THEN 'admin' ELSE 'user' END
+       RETURNING role`,
     )
       .bind(userId, values.handle, values.displayName, values.passwordHash, values.passwordSalt, wantsAdmin ? 1 : 0)
-      .run();
+      .first<{ role: string }>();
+    return { ok: true, userId, promoted: inserted?.role === "admin" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // 「ID がすでに使われている」と言えるのは handle の一意制約に当たったときだけ。
@@ -128,7 +152,11 @@ export async function createUserAccount(
     if (/UNIQUE constraint failed:\s*users\.handle/i.test(message)) return { ok: false, reason: "handleTaken" };
     throw error;
   }
-  return { ok: true, userId };
+}
+
+/** アカウントを消す（ブートストラップに失敗した予約語ハンドルの取り消し用）。 */
+export async function deleteUserAccount(env: AppEnv, userId: string): Promise<void> {
+  await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
 }
 
 export async function isFollowing(env: AppEnv, followerId: string, followingId: string): Promise<boolean> {

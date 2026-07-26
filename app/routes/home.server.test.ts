@@ -554,6 +554,70 @@ describe("初期管理者ブートストラップ（ADMIN_HANDLE）", () => {
     expect(row?.role).toBe("admin");
   });
 
+  it("ログインできる admin が既に居れば、指定ハンドルでも予約語は拒否する", async () => {
+    // 別のアカウントで管理者が確立済みのインスタンス。免除を続けると、昇格しない
+    // ただの利用者が @admin を取れてしまい、なりすましの穴になる。
+    await createUser(app.env, { handle: "founder", role: "admin" });
+
+    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "admin" }), adminEnv());
+    const { data, status } = expectData<ActionResult>(result);
+    expect(status).toBe(400);
+    expect(data.error).toBe("このIDは使用できません。");
+    const row = await app.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE handle = 'admin'").first<{
+      n: number;
+    }>();
+    expect(row?.n).toBe(0);
+  });
+
+  it("パスワード無しのシード admin は成立済みとみなさない", async () => {
+    // シードの公式アカウントは admin だがログインできないので、ブートストラップは開いたまま。
+    await createUser(app.env, { handle: "seed_admin", role: "admin", password: null });
+
+    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "admin" }), adminEnv());
+    expect(expectRedirect(result).location).toBe("/");
+    const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'admin'").first<{ role: string }>();
+    expect(row?.role).toBe("admin");
+  });
+
+  it("チェック直後に他の管理者が確立された場合は、作成した行を取り消す", async () => {
+    // 事前チェックと INSERT の隙間で管理者が確立される競合。昇格しなかった
+    // 予約語ハンドルのアカウントを残すと、ただの利用者が @admin を持ってしまう。
+    const raced = {
+      ...app.env,
+      ADMIN_HANDLE: "admin",
+      DB: {
+        ...app.env.DB,
+        prepare: (sql: string) => {
+          // 事前チェックだけ「管理者は居ない」と答えさせ、INSERT 側は実物に任せる。
+          if (sql.includes("role = 'admin' AND password_hash IS NOT NULL LIMIT 1")) {
+            const empty = {
+              bind: () => empty,
+              first: () => Promise.resolve(null),
+              run: () => Promise.resolve({ meta: {} }),
+              all: () => Promise.resolve({ results: [] }),
+              raw: () => Promise.resolve([]),
+            } as unknown as D1PreparedStatement;
+            return empty;
+          }
+          return app.env.DB.prepare(sql);
+        },
+        batch: app.env.DB.batch.bind(app.env.DB),
+      },
+    } as unknown as typeof app.env;
+    // 実際には管理者が既に居る（INSERT の CASE 側はこちらを見る）。
+    await createUser(app.env, { handle: "founder", role: "admin" });
+
+    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "admin" }), raced);
+    const { data, status } = expectData<ActionResult>(result);
+    expect(status).toBe(400);
+    expect(data.error).toBe("このIDは使用できません。");
+    // 作られかけた行は残っていない。
+    const row = await app.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE handle = 'admin'").first<{
+      n: number;
+    }>();
+    expect(row?.n).toBe(0);
+  });
+
   it("指定と異なる予約語ハンドルは従来どおり拒否する", async () => {
     const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "owner" }), adminEnv());
     const { data, status } = expectData<ActionResult>(result);

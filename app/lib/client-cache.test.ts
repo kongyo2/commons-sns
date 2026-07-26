@@ -114,7 +114,10 @@ describe("readCachedView / writeCachedView", () => {
   });
 
   it("保持期限ちょうどのレコードはまだ使える", async () => {
-    seed(store, { key: "bookmarks", savedAt: Date.now() - CACHE_MAX_AGE_MS });
+    // seed と読み取りの間に1ミリ秒進むと「期限切れ」に転んでしまう境界値なので、時計を止める。
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    seed(store, { key: "bookmarks", savedAt: now - CACHE_MAX_AGE_MS });
 
     expect(await readCachedView("bookmarks", "user_1")).not.toBeNull();
   });

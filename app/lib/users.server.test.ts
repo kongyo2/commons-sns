@@ -12,7 +12,9 @@ import {
 import { BIO_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH } from "./profile-constraints";
 import {
   createUserAccount,
+  deleteUserAccount,
   FOLLOW_LIST_PAGE_SIZE,
+  hasLoginCapableAdmin,
   getFollowList,
   getUserProfileByHandle,
   MAX_FOLLOW_LIST_PAGE,
@@ -94,7 +96,7 @@ describe("createUserAccount", () => {
 
   it("creates a regular account", async () => {
     const result = await createUserAccount(app.env, { handle: "newbie", displayName: "新人", ...credentials });
-    expect(result).toEqual({ ok: true, userId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(result).toEqual({ ok: true, userId: expect.stringMatching(/^[0-9a-f-]{36}$/), promoted: false });
 
     const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'newbie'").first<{ role: string }>();
     expect(row).toEqual({ role: "user" });
@@ -126,16 +128,17 @@ describe("createUserAccount", () => {
       adminHandle: " Owner ",
       ...credentials,
     });
-    expect(owner.ok).toBe(true);
+    expect(owner).toMatchObject({ ok: true, promoted: true });
     expect((await getUserProfileByHandle(app.env, "owner"))?.role).toBe("admin");
 
     // 既にログインできる admin が居るので、同じ設定でも2人目は昇格しない。
-    await createUserAccount(app.env, {
+    const second = await createUserAccount(app.env, {
       handle: "owner2",
       displayName: "偽オーナー",
       adminHandle: "owner2",
       ...credentials,
     });
+    expect(second).toMatchObject({ ok: true, promoted: false });
     expect((await getUserProfileByHandle(app.env, "owner2"))?.role).toBe("user");
   });
 
@@ -150,8 +153,32 @@ describe("createUserAccount", () => {
       adminHandle: "owner",
       ...credentials,
     });
-    expect(owner.ok).toBe(true);
+    expect(owner).toMatchObject({ ok: true, promoted: true });
     expect((await getUserProfileByHandle(app.env, "owner"))?.role).toBe("admin");
+  });
+
+  it("hasLoginCapableAdmin はログインできる admin だけを数える", async () => {
+    expect(await hasLoginCapableAdmin(app.env)).toBe(false);
+    // シードの公式アカウント相当（パスワード無しの admin）は「居ない」と扱う。
+    await createUser(app.env, { handle: "seed_admin", role: "admin", password: null });
+    expect(await hasLoginCapableAdmin(app.env)).toBe(false);
+    // 一般利用者も対象外。
+    await createUser(app.env, { handle: "plain_user" });
+    expect(await hasLoginCapableAdmin(app.env)).toBe(false);
+
+    await createUser(app.env, { handle: "real_admin", role: "admin" });
+    expect(await hasLoginCapableAdmin(app.env)).toBe(true);
+  });
+
+  it("deleteUserAccount は作成したアカウントを取り消せる", async () => {
+    // 予約語ハンドルの免除で作ったのに昇格しなかった場合の巻き戻しに使う。
+    const created = await createUserAccount(app.env, { handle: "rollback", displayName: "取消", ...credentials });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await deleteUserAccount(app.env, created.userId);
+
+    expect(await getUserProfileByHandle(app.env, "rollback")).toBeNull();
   });
 
   it("never promotes when ADMIN_HANDLE is unset, empty or a different handle", async () => {
