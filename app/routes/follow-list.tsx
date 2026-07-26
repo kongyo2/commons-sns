@@ -46,12 +46,15 @@ function handleFromParams(params: Route.LoaderArgs["params"]) {
  * loader・clientLoader・action のどこからでも同じ規則で判定できる形にしている
  * （`route.id` はクライアント側の判定に持ち込めない）。
  *
- * **`.data` を必ず落とすこと。** クライアント遷移では React Router が
- * `/users/x/following.data?_routes=following` を取りに行くため、素の `endsWith`
- * だと種別を取り違え、URL だけ変わって中身がフォロワーのままになる。
+ * **`.data` と末尾スラッシュを必ず落とすこと。** 素の `endsWith` だと、
+ * どちらも「フォロワー」と誤判定して URL と中身が食い違う。
+ *
+ * - `.data`: クライアント遷移では React Router が
+ *   `/users/x/following.data?_routes=following` を取りに行く
+ * - 末尾スラッシュ: `/users/x/following/` もこのルートにマッチする（実測で 200 を返す）
  */
 function kindFromUrl(url: string): FollowListKind {
-  const path = new URL(url).pathname.replace(/\.data$/, "");
+  const path = new URL(url).pathname.replace(/\.data$/, "").replace(/\/+$/, "");
   return path.endsWith("/following") ? "following" : "followers";
 }
 

@@ -89,6 +89,30 @@ describe("follow-list loader", () => {
     expect(followers.entries.map((entry) => entry.handle)).toEqual(["follower"]);
   });
 
+  it("末尾スラッシュ付きの URL でも種別を取り違えない", async () => {
+    // `/users/x/following/` もこのルートにマッチする（実測で 200）。素の endsWith だと
+    // 「フォロワー」と誤判定し、URL と中身が食い違う。
+    const owner = await createUser(app.env, { handle: "owner" });
+    const target = await createUser(app.env, { handle: "target" });
+    const follower = await createUser(app.env, { handle: "follower" });
+    await addFollow(app.env, owner.id, target.id);
+    await addFollow(app.env, follower.id, owner.id);
+
+    const slashed = (kind: "following" | "followers") =>
+      routeArgs(getRequest(`http://test.local/users/owner/${kind}/`), app.env, {
+        pattern: kind === "following" ? FOLLOWING_PATTERN : FOLLOWERS_PATTERN,
+        params: { handle: "owner" },
+      });
+
+    const following = expectData<LoaderResult>(await loader(slashed("following"))).data;
+    expect(following.kind).toBe("following");
+    expect(following.entries.map((entry) => entry.handle)).toEqual(["target"]);
+
+    const followers = expectData<LoaderResult>(await loader(slashed("followers"))).data;
+    expect(followers.kind).toBe("followers");
+    expect(followers.entries.map((entry) => entry.handle)).toEqual(["follower"]);
+  });
+
   it("フォロー中の一覧を返し、未ログインでも読める", async () => {
     const owner = await createUser(app.env, { handle: "owner" });
     const a = await createUser(app.env, { handle: "target_a" });
