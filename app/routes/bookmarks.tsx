@@ -1,8 +1,18 @@
 import { Bookmark } from "lucide-react";
-import { data, Link, redirect, useFetcher } from "react-router";
+import { useEffect } from "react";
+import { data, Link, redirect, useFetcher, useRevalidator } from "react-router";
 import type { Route } from "./+types/bookmarks";
 import { cloudflareContext } from "../cloudflare";
 import { getSessionUser } from "../lib/auth.server";
+import {
+  CACHE_FRESH_MS,
+  cacheKeys,
+  consumeBypass,
+  markBypass,
+  readCachedView,
+  viewerHint,
+  writeCachedView,
+} from "../lib/client-cache";
 import { PostSummaryCard } from "../lib/post-presentation";
 import { getBookmarkedPosts, type TimelinePost } from "../lib/posts.server";
 import { consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
@@ -62,6 +72,37 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   return { user, posts, page, hasNextPage, bookmarksError };
 }
+
+/** サーバーローダーが返す（シリアライズ済みの）ブックマークデータ。 */
+type BookmarksData = Awaited<ReturnType<Route.ClientLoaderArgs["serverLoader"]>>;
+
+/**
+ * ブックマーク一覧を IndexedDB キャッシュ経由で読む（stale-while-revalidate）。
+ * 判断は `app/routes/home.tsx` の clientLoader と同じ。
+ */
+export async function clientLoader({ request, serverLoader }: Route.ClientLoaderArgs) {
+  const key = cacheKeys.bookmarks(pageFromUrl(request.url));
+
+  const fetchFresh = async () => {
+    const startedAt = Date.now();
+    // 未ログインならサーバーローダーがリダイレクトを投げる。ここでは捕まえない。
+    const fresh = await serverLoader();
+    if (!fresh.bookmarksError) await writeCachedView(key, fresh.user.id, fresh, startedAt);
+    return { ...fresh, cacheState: "network" as const };
+  };
+
+  if (consumeBypass(key)) return fetchFresh();
+
+  const cached = await readCachedView<BookmarksData>(key, viewerHint());
+  if (!cached) return fetchFresh();
+
+  if (Date.now() - cached.savedAt < CACHE_FRESH_MS) {
+    return { ...cached.payload, cacheState: "fresh-cache" as const };
+  }
+  markBypass(key);
+  return { ...cached.payload, cacheState: "stale-cache" as const };
+}
+clientLoader.hydrate = false;
 
 export async function action({ request, context }: Route.ActionArgs) {
   // クロスサイト送信と過大な本文は、セッションを引く前に落とす（`request-guard.server.ts`）。
@@ -133,7 +174,14 @@ function BookmarkCard({ post }: { post: TimelinePost }) {
 
 export default function BookmarksPage({ loaderData }: Route.ComponentProps) {
   const { user, posts, page, hasNextPage, bookmarksError } = loaderData;
+  const revalidator = useRevalidator();
+  const cacheState = "cacheState" in loaderData ? loaderData.cacheState : undefined;
   const paged = page > 1 || hasNextPage;
+
+  // 期限切れキャッシュを表示したときだけ、裏で最新を取り直す。
+  useEffect(() => {
+    if (cacheState === "stale-cache" && revalidator.state === "idle") void revalidator.revalidate();
+  }, [cacheState, revalidator]);
 
   return (
     <SubpageShell

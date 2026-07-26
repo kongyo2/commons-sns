@@ -10,6 +10,7 @@ import {
   getSessionUser,
   verifyPasswordOrDummy,
 } from "../lib/auth.server";
+import { clearCache } from "../lib/client-cache";
 import { consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { SubpageShell } from "../lib/subpage";
@@ -147,7 +148,8 @@ function LogoutSection() {
     <section className="settings-section">
       <h2>セッション</h2>
       <p>この端末からログアウトします。ほかの端末のログイン状態はそのまま残ります。</p>
-      <Form method="post" className="settings-form">
+      {/* ログアウト時は端末に残したキャッシュも消す。 */}
+      <Form method="post" className="settings-form" onSubmit={() => void clearCache()}>
         <input type="hidden" name="intent" value="logout" />
         <button type="submit" className="settings-submit secondary" disabled={isSubmitting}>
           {isSubmitting ? "ログアウトしています…" : "ログアウト"}
@@ -273,7 +275,8 @@ export default function SettingsPage({ loaderData, actionData }: Route.Component
           この操作は元に戻せません。
         </p>
 
-        <Form method="post" className="settings-form">
+        {/* 退会もセッションが消えるので、端末のキャッシュを残さない。 */}
+        <Form method="post" className="settings-form" onSubmit={() => void clearCache()}>
           <input type="hidden" name="intent" value="deleteAccount" />
           <label>
             現在のパスワード

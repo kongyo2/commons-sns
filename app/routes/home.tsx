@@ -35,6 +35,17 @@ import {
   verifyPasswordOrDummy,
 } from "../lib/auth.server";
 import type { SessionUser } from "../lib/auth.server";
+import {
+  CACHE_FRESH_MS,
+  cacheKeys,
+  clearCache,
+  consumeBypass,
+  GUEST_OWNER,
+  markBypass,
+  readCachedView,
+  viewerHint,
+  writeCachedView,
+} from "../lib/client-cache";
 import { isInviteRequired, verifyInviteCode } from "../lib/invite.server";
 import { avatarAppearance, PostBody, PostIdentity, UserAvatar } from "../lib/post-presentation";
 import { getTimeline } from "../lib/posts.server";
@@ -92,6 +103,44 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     return { user, tab, posts: [] as TimelinePost[], timelineError: true, autoReloadMs, inviteRequired };
   }
 }
+
+/** サーバーローダーが返す（シリアライズ済みの）タイムラインデータ。 */
+type TimelineData = Awaited<ReturnType<Route.ClientLoaderArgs["serverLoader"]>>;
+
+/**
+ * タイムラインを IndexedDB キャッシュ経由で読む（stale-while-revalidate）。
+ *
+ * 初回の SSR では動かない（`clientLoader.hydrate = false`）ので、サーバー描画の挙動は変わらない。
+ * クライアント遷移では、鮮度ウィンドウ内ならサーバーへ行かずに即時表示し、
+ * 古いレコードはいったん表示してから裏で再検証する（再検証はコンポーネント側の effect が起動する）。
+ */
+export async function clientLoader({ request, serverLoader }: Route.ClientLoaderArgs) {
+  const requestedTab = new URL(request.url).searchParams.get("tab");
+  const key = cacheKeys.timeline(requestedTab === "following" ? "following" : "recommended");
+
+  const fetchFresh = async () => {
+    const startedAt = Date.now();
+    const fresh = await serverLoader();
+    // 読み込みに失敗した応答は保存しない（次回も必ずサーバーへ行かせる）。
+    if (!fresh.timelineError) await writeCachedView(key, fresh.user?.id ?? GUEST_OWNER, fresh, startedAt);
+    return { ...fresh, cacheState: "network" as const };
+  };
+
+  // 直前に stale を返した再検証パスは必ずサーバーへ行く。
+  if (consumeBypass(key)) return fetchFresh();
+
+  const cached = await readCachedView<TimelineData>(key, viewerHint());
+  if (!cached) return fetchFresh();
+
+  // 鮮度ウィンドウ内なら再フェッチ自体を省略する（Worker 呼び出しも D1 読み取りも 0）。
+  if (Date.now() - cached.savedAt < CACHE_FRESH_MS) {
+    return { ...cached.payload, cacheState: "fresh-cache" as const };
+  }
+  // 古いが使える: まず即時表示して、直後に再検証する。
+  markBypass(key);
+  return { ...cached.payload, cacheState: "stale-cache" as const };
+}
+clientLoader.hydrate = false;
 
 function formText(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
@@ -600,6 +649,13 @@ export default function HomePage({ loaderData, actionData }: Route.ComponentProp
     authParam === "login" || authParam === "signup" ? authParam : null,
   );
   const [dismissedError, setDismissedError] = useState(false);
+  // SSR ハイドレーション時は clientLoader が動かないので undefined になりうる。
+  const cacheState = "cacheState" in loaderData ? loaderData.cacheState : undefined;
+
+  // 期限切れキャッシュを表示したときだけ、裏で最新を取り直す（stale-while-revalidate）。
+  useEffect(() => {
+    if (cacheState === "stale-cache" && revalidator.state === "idle") void revalidator.revalidate();
+  }, [cacheState, revalidator]);
 
   // A new action response may carry a fresh auth error; let it show again.
   useEffect(() => {
@@ -728,7 +784,8 @@ export default function HomePage({ loaderData, actionData }: Route.ComponentProp
                 <strong>{user.displayName}</strong>
                 <small>@{user.handle}</small>
               </span>
-              <IntentForm intent="logout">
+              {/* ログアウト時は端末に残したキャッシュも消す。 */}
+              <IntentForm intent="logout" onSubmit={() => void clearCache()}>
                 <button className="icon-button" type="submit" aria-label="ログアウト">
                   <LogOut size={17} />
                 </button>

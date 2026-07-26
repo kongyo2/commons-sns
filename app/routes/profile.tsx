@@ -1,11 +1,21 @@
 import { CalendarDays, Check, Settings, Shuffle, UserRound } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { data, Link, redirect, useFetcher, useLocation } from "react-router";
+import { data, Link, redirect, useFetcher, useLocation, useRevalidator } from "react-router";
 import type { Route } from "./+types/profile";
 import { cloudflareContext } from "../cloudflare";
 import { getSessionUser } from "../lib/auth.server";
 import { presetAvatarKey } from "../lib/avatar-constraints";
 import { PRESET_AVATARS, PresetAvatarSymbol } from "../lib/avatar-presets";
+import {
+  CACHE_FRESH_MS,
+  cacheKeys,
+  consumeBypass,
+  GUEST_OWNER,
+  markBypass,
+  readCachedView,
+  viewerHint,
+  writeCachedView,
+} from "../lib/client-cache";
 import { avatarClass, normalizeDate, PostSummaryCard, UserAvatar } from "../lib/post-presentation";
 import { getUserPosts, type TimelinePost } from "../lib/posts.server";
 import { BIO_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_MIN_LENGTH } from "../lib/profile-constraints";
@@ -102,6 +112,39 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     viewerFollows,
   };
 }
+
+/** サーバーローダーが返す（シリアライズ済みの）プロフィールデータ。 */
+type ProfileData = Awaited<ReturnType<Route.ClientLoaderArgs["serverLoader"]>>;
+
+/**
+ * プロフィールを IndexedDB キャッシュ経由で読む（stale-while-revalidate）。
+ *
+ * 表示内容は閲覧者ごとに違う（フォロー状態・自分のプロフィールなど）ので、
+ * キーはハンドルとページ番号、所有者は閲覧者 ID で分ける。
+ */
+export async function clientLoader({ request, params, serverLoader }: Route.ClientLoaderArgs) {
+  const key = cacheKeys.profile(handleFromParams(params), pageFromUrl(request.url));
+
+  const fetchFresh = async () => {
+    const startedAt = Date.now();
+    // 存在しないハンドルではサーバーローダーが 404 を投げる。ここでは捕まえない。
+    const fresh = await serverLoader();
+    if (!fresh.postsError) await writeCachedView(key, fresh.user?.id ?? GUEST_OWNER, fresh, startedAt);
+    return { ...fresh, cacheState: "network" as const };
+  };
+
+  if (consumeBypass(key)) return fetchFresh();
+
+  const cached = await readCachedView<ProfileData>(key, viewerHint());
+  if (!cached) return fetchFresh();
+
+  if (Date.now() - cached.savedAt < CACHE_FRESH_MS) {
+    return { ...cached.payload, cacheState: "fresh-cache" as const };
+  }
+  markBypass(key);
+  return { ...cached.payload, cacheState: "stale-cache" as const };
+}
+clientLoader.hydrate = false;
 
 /**
  * Processes authenticated profile actions (edit, follow) for the profile
@@ -459,8 +502,15 @@ export default function ProfilePage({ loaderData }: Route.ComponentProps) {
   const isOwner = user?.id === profile.id;
   // ページ内リンクで router state (backTo) を引き継ぎ、戻り先のタブを保持する。
   const location = useLocation();
+  const revalidator = useRevalidator();
+  const cacheState = "cacheState" in loaderData ? loaderData.cacheState : undefined;
   const [editing, setEditing] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+
+  // 期限切れキャッシュを表示したときだけ、裏で最新を取り直す。
+  useEffect(() => {
+    if (cacheState === "stale-cache" && revalidator.state === "idle") void revalidator.revalidate();
+  }, [cacheState, revalidator]);
 
   useEffect(() => {
     if (!savedNotice) return;
