@@ -164,7 +164,12 @@ describe("PostIdentity", () => {
 
   it("adds the verified badge only for admin authors", () => {
     const html = renderInRouter(
-      <PostIdentity name="Commons 開発チーム" handle="commons_dev" authorRole="admin" createdAt="2026-07-01 00:00:00" />,
+      <PostIdentity
+        name="Commons 開発チーム"
+        handle="commons_dev"
+        authorRole="admin"
+        createdAt="2026-07-01 00:00:00"
+      />,
     );
     expect(html).toContain("公式");
   });

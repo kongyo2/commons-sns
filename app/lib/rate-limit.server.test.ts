@@ -58,9 +58,6 @@ describe("consumeToken", () => {
     expect(consumeToken("reaction", "user_1", T0).allowed).toBe(true);
   });
 
-
-
-
   it("refills over time and caps at the capacity", () => {
     const { capacity, refillPerSecond } = RATE_LIMITS.post;
     for (let index = 0; index < capacity; index += 1) consumeToken("post", "user_1", T0);

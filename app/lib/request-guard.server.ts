@@ -59,17 +59,17 @@ export function crossSiteRejection(request: Request): Response | null {
 
 /** {@link readFormDataBounded} の結果。失敗時はそのまま応答へ写せる形で返す。 */
 export type BoundedFormDataResult =
-  | { ok: true; formData: FormData }
-  | { ok: false; status: 413 | 500; message: string };
+  { ok: true; formData: FormData } | { ok: false; status: 413 | 500; message: string };
 
 /**
  * 本文サイズの門番を通してから `request.formData()` を読む。
  *
  * 【必須】`formData()` を呼んだ時点で本文は isolate のヒープへ全部展開される。
- * Cloudflare の Free プランはリクエストボディ 100MB まで通すので、この門番が無いと
- * 100MB のボディを数本投げるだけで isolate のメモリ上限（128MB）を踏ませられる。
- * isolate が作り直されるとレートリミットのバケツ（module スコープの Map）も
- * まるごと消えるため、「大きなボディで isolate を回して上限を無効化する」経路になる。
+ * Cloudflare はリクエストボディを 100MB（プランによってはそれ以上）まで通すので、
+ * この門番が無いと巨大なボディを数本投げるだけで isolate のメモリ上限（128MB）を
+ * 踏ませられる。isolate が作り直されるとレートリミットのバケツ（module スコープの
+ * Map）もまるごと消えるため、「大きなボディで isolate を回して上限を無効化する」
+ * 経路になる。
  *
  * 長さを申告しないリクエストも弾く（安全側）。ブラウザは `<form>` 送信でも
  * `fetch` の FormData / URLSearchParams 本文でも必ず `Content-Length` を付けるので、
