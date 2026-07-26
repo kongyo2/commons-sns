@@ -12,7 +12,10 @@ import {
 import { BIO_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH } from "./profile-constraints";
 import {
   createUserAccount,
+  FOLLOW_LIST_PAGE_SIZE,
+  getFollowList,
   getUserProfileByHandle,
+  MAX_FOLLOW_LIST_PAGE,
   isFollowing,
   ProfileValidationError,
   toggleFollow,
@@ -193,6 +196,79 @@ describe("isFollowing / toggleFollow", () => {
     const user = await createUser(app.env);
     await expect(toggleFollow(app.env, user.id, user.id)).rejects.toThrow();
     expect(await isFollowing(app.env, user.id, user.id)).toBe(false);
+  });
+});
+
+describe("getFollowList", () => {
+  it("フォロー中とフォロワーを主キー順で返す", async () => {
+    const viewer = await createUser(app.env, { id: "fl_viewer", handle: "fl_viewer" });
+    const first = await createUser(app.env, { id: "fl_a", handle: "fl_a", displayName: "エー", bio: "自己紹介A" });
+    const second = await createUser(app.env, { id: "fl_b", handle: "fl_b" });
+    await addFollow(app.env, viewer.id, first.id);
+    await addFollow(app.env, viewer.id, second.id);
+    await addFollow(app.env, second.id, viewer.id);
+
+    const following = await getFollowList(app.env, viewer.id, "following", viewer.id);
+    expect(following.entries.map((entry) => entry.id)).toEqual(["fl_a", "fl_b"]);
+    expect(following.entries[0]).toMatchObject({
+      handle: "fl_a",
+      displayName: "エー",
+      bio: "自己紹介A",
+      avatarKey: null,
+      role: "user",
+      viewerFollows: true,
+    });
+    expect(following.hasNextPage).toBe(false);
+
+    const followers = await getFollowList(app.env, viewer.id, "followers", viewer.id);
+    expect(followers.entries.map((entry) => entry.id)).toEqual(["fl_b"]);
+    expect(followers.entries[0].viewerFollows).toBe(true);
+  });
+
+  it("閲覧者がフォローしていない相手には viewerFollows を立てない", async () => {
+    const owner = await createUser(app.env, { id: "fl_owner", handle: "fl_owner" });
+    const target = await createUser(app.env, { id: "fl_target", handle: "fl_target" });
+    const guest = await createUser(app.env, { id: "fl_guest", handle: "fl_guest" });
+    await addFollow(app.env, owner.id, target.id);
+
+    const asGuest = await getFollowList(app.env, owner.id, "following", guest.id);
+    expect(asGuest.entries[0].viewerFollows).toBe(false);
+
+    // 未ログインでも一覧は見える（相互判定のクエリは撃たない）。
+    const anonymous = await getFollowList(app.env, owner.id, "following", null);
+    expect(anonymous.entries[0].viewerFollows).toBe(false);
+  });
+
+  it("ページングし、次ページの有無を返す", async () => {
+    const owner = await createUser(app.env, { id: "fl_pager", handle: "fl_pager" });
+    for (let index = 0; index < 3; index += 1) {
+      const target = await createUser(app.env, { id: `fl_p${index}`, handle: `fl_p${index}` });
+      await addFollow(app.env, owner.id, target.id);
+    }
+
+    const first = await getFollowList(app.env, owner.id, "following", null, { limit: 2 });
+    expect(first.entries.map((entry) => entry.id)).toEqual(["fl_p0", "fl_p1"]);
+    expect(first.hasNextPage).toBe(true);
+
+    const second = await getFollowList(app.env, owner.id, "following", null, { limit: 2, offset: 2 });
+    expect(second.entries.map((entry) => entry.id)).toEqual(["fl_p2"]);
+    expect(second.hasNextPage).toBe(false);
+  });
+
+  it("誰もいない一覧と、範囲外の指定を安全に扱う", async () => {
+    const lonely = await createUser(app.env);
+    expect(await getFollowList(app.env, lonely.id, "followers", lonely.id)).toEqual({
+      entries: [],
+      hasNextPage: false,
+    });
+    expect(
+      (await getFollowList(app.env, lonely.id, "following", null, { limit: 0, offset: -10 })).entries,
+    ).toHaveLength(0);
+    expect(
+      (await getFollowList(app.env, lonely.id, "following", null, { limit: 1_000, offset: Number.NaN })).entries,
+    ).toHaveLength(0);
+    expect(FOLLOW_LIST_PAGE_SIZE).toBeGreaterThan(0);
+    expect(MAX_FOLLOW_LIST_PAGE).toBeGreaterThan(0);
   });
 });
 

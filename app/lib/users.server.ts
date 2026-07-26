@@ -168,6 +168,102 @@ export async function toggleFollow(
   return { following: await isFollowing(env, followerId, followingId) };
 }
 
+export type FollowListKind = "following" | "followers";
+
+export type FollowListEntry = {
+  id: string;
+  handle: string;
+  displayName: string;
+  bio: string;
+  avatarKey: string | null;
+  role: UserProfile["role"];
+  /** 閲覧者がこの相手をフォローしているか（未ログインなら false） */
+  viewerFollows: boolean;
+};
+
+/** フォロー一覧の1ページあたり件数。 */
+export const FOLLOW_LIST_PAGE_SIZE = 20;
+/** フォロー一覧の最大ページ番号（OFFSET 走査の頭打ち）。`app/routes/follow-list.tsx` と揃える。 */
+export const MAX_FOLLOW_LIST_PAGE = 25;
+
+type FollowListRow = {
+  id: string;
+  handle: string;
+  display_name: string;
+  bio: string;
+  avatar_key: string | null;
+  role: UserProfile["role"];
+};
+
+/**
+ * フォロー中／フォロワーの一覧を取得する。
+ *
+ * 並びは主キー順（following は `following_id` 昇順 / followers は `follower_id` 昇順）。
+ * `created_at` 順にすると `follows` に索引を1本足すことになり、フォロー1回あたりの
+ * 書き込み行が増える。小規模インスタンスでは並び順より安さを取る。
+ *
+ * 相互表示（フォローボタンの初期状態）は、取得した相手 ID を1クエリでまとめて引く
+ * （バインドは 1 + ページ件数 = 最大 91 個で、D1 の上限 100 に収まる）。
+ */
+export async function getFollowList(
+  env: AppEnv,
+  profileUserId: string,
+  kind: FollowListKind,
+  viewerId: string | null,
+  options: { limit?: number; offset?: number } = {},
+): Promise<{ entries: FollowListEntry[]; hasNextPage: boolean }> {
+  // 取得件数は 90 で頭打ちにする。相互判定の `IN (?,…)` に ID をそのまま並べるので、
+  // 「閲覧者 1 + 件数」が D1 のバインド変数上限 100 を超えてはいけない。
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? FOLLOW_LIST_PAGE_SIZE), 1), 90);
+  const requestedOffset = Math.trunc(options.offset ?? 0);
+  const offset = Number.isNaN(requestedOffset) ? 0 : Math.max(requestedOffset, 0);
+
+  const sql =
+    kind === "following"
+      ? `SELECT u.id, u.handle, u.display_name, u.bio, u.avatar_key, u.role
+           FROM follows f JOIN users u ON u.id = f.following_id
+          WHERE f.follower_id = ?
+          ORDER BY f.following_id
+          LIMIT ? OFFSET ?`
+      : `SELECT u.id, u.handle, u.display_name, u.bio, u.avatar_key, u.role
+           FROM follows f JOIN users u ON u.id = f.follower_id
+          WHERE f.following_id = ?
+          ORDER BY f.follower_id
+          LIMIT ? OFFSET ?`;
+
+  const result = await env.DB.prepare(sql)
+    .bind(profileUserId, limit + 1, offset)
+    .all<FollowListRow>();
+  const rows = result.results ?? [];
+  const hasNextPage = rows.length > limit;
+  const page = rows.slice(0, limit);
+
+  const follows = new Set<string>();
+  if (viewerId && page.length > 0) {
+    const ids = page.map((row) => row.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const mutual = await env.DB.prepare(
+      `SELECT following_id FROM follows WHERE follower_id = ? AND following_id IN (${placeholders})`,
+    )
+      .bind(viewerId, ...ids)
+      .all<{ following_id: string }>();
+    for (const row of mutual.results ?? []) follows.add(row.following_id);
+  }
+
+  return {
+    entries: page.map((row) => ({
+      id: row.id,
+      handle: row.handle,
+      displayName: row.display_name,
+      bio: row.bio,
+      avatarKey: row.avatar_key,
+      role: row.role,
+      viewerFollows: follows.has(row.id),
+    })),
+    hasNextPage,
+  };
+}
+
 /**
  * Sanitizes and updates a user's display name, bio and avatar selection.
  *

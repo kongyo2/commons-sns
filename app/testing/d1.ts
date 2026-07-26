@@ -196,6 +196,66 @@ export function rejectingEnv(env: AppEnv, match: string, reason: unknown): AppEn
   return { ...env, DB: { ...env.DB, prepare, batch: env.DB.batch.bind(env.DB) } as AppEnv["DB"] };
 }
 
+/**
+ * D1 の `meta.rows_read` を積算する env を返す（無料枠の回帰テスト用）。
+ *
+ * 索引の述語を1つ書き忘れるだけで全走査に落ちるが、機能テストは全走査でも通る。
+ * 読み取り行数を数値で固定することだけが、無料枠が壊れたことに気づける防波堤になる。
+ *
+ * `first()` は D1 の API がメタ情報を返さないため、内部で `all()` を撃って
+ * 先頭行を返す形で数える（対象クエリはすべて `LIMIT 1` 付きなので読み取り行数は同じ）。
+ */
+export function countingEnv(env: AppEnv): { env: AppEnv; rowsRead: () => number; reset: () => void } {
+  let total = 0;
+  const add = (meta: { rows_read?: number } | undefined) => {
+    total += meta?.rows_read ?? 0;
+  };
+  // batch() には実物の D1PreparedStatement を渡す必要があるため、包んだ側から
+  // 元の文を引けるようにしておく。
+  const inner = new WeakMap<object, D1PreparedStatement>();
+  const wrap = (statement: D1PreparedStatement): D1PreparedStatement => {
+    const wrapped = {
+      bind: (...values: unknown[]) => wrap(statement.bind(...values)),
+      run: async () => {
+        const result = await statement.run();
+        add(result.meta);
+        return result;
+      },
+      all: async () => {
+        const result = await statement.all();
+        add(result.meta);
+        return result;
+      },
+      first: async (column?: string) => {
+        const result = await statement.all<Record<string, unknown>>();
+        add(result.meta);
+        const row = result.results?.[0] ?? null;
+        if (column === undefined) return row;
+        return row === null ? null : (row[column] ?? null);
+      },
+      raw: () => statement.raw(),
+    };
+    inner.set(wrapped, statement);
+    return wrapped as unknown as D1PreparedStatement;
+  };
+  const db = {
+    prepare: (sql: string) => wrap(env.DB.prepare(sql)),
+    batch: async (statements: D1PreparedStatement[]) => {
+      const unwrapped = statements.map((statement) => inner.get(statement as unknown as object) ?? statement);
+      const results = await env.DB.batch(unwrapped);
+      for (const result of results) add(result.meta);
+      return results;
+    },
+  } as unknown as AppEnv["DB"];
+  return {
+    env: { ...env, DB: db },
+    rowsRead: () => total,
+    reset: () => {
+      total = 0;
+    },
+  };
+}
+
 /** An env whose database rejects everything — the "D1 is down" scenario. */
 export function brokenEnv(message = "simulated D1 outage"): AppEnv {
   return {

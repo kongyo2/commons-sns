@@ -224,6 +224,11 @@ function joinedAt(value: string) {
   return new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "long" }).format(new Date(normalizeDate(value)));
 }
 
+/** フォロー一覧ページへのパス。ハンドルは URL に載るのでエスケープする。 */
+function followListTo(handle: string, kind: "following" | "followers") {
+  return `/users/${encodeURIComponent(handle)}/${kind}`;
+}
+
 function FollowButton({ following }: { following: boolean }) {
   const fetcher = useFetcher<ActionResult>();
   // Optimistic: show the toggled state while the submission is in flight.
@@ -567,12 +572,12 @@ export default function ProfilePage({ loaderData }: Route.ComponentProps) {
             <CalendarDays size={16} aria-hidden={true} /> {joinedAt(profile.createdAt)}からCommonsを利用
           </div>
           <div className="profile-follow-stats">
-            <span>
+            <Link to={followListTo(profile.handle, "following")} state={location.state}>
               <strong>{profile.followingCount}</strong> <span>フォロー中</span>
-            </span>
-            <span>
+            </Link>
+            <Link to={followListTo(profile.handle, "followers")} state={location.state}>
               <strong>{profile.followerCount}</strong> <span>フォロワー</span>
-            </span>
+            </Link>
           </div>
         </section>
 
