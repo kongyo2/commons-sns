@@ -36,7 +36,7 @@ import {
 } from "../lib/auth.server";
 import type { SessionUser } from "../lib/auth.server";
 import { isInviteRequired, verifyInviteCode } from "../lib/invite.server";
-import { avatarAppearance, PostIdentity, UserAvatar } from "../lib/post-presentation";
+import { avatarAppearance, PostBody, PostIdentity, UserAvatar } from "../lib/post-presentation";
 import { getTimeline } from "../lib/posts.server";
 import type { TimelinePost, TimelineScope } from "../lib/posts.server";
 import { clientKey, consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
@@ -556,7 +556,7 @@ function PostCard({ post, user, onRequireLogin }: PostChildProps) {
       <UserAvatar name={post.name} handle={post.handle} avatarKey={post.avatarKey} />
       <div className="post-content">
         <header>
-          <PostIdentity name={post.name} handle={post.handle} createdAt={post.createdAt} />
+          <PostIdentity name={post.name} handle={post.handle} authorRole={post.role} createdAt={post.createdAt} />
           {user?.id === post.authorId ? (
             <IntentForm fetcher={deleteFetcher} intent="deletePost" fields={{ postId: post.id }}>
               <button type="submit" disabled={deleteFetcher.state !== "idle"} aria-label="投稿を削除">
@@ -569,7 +569,7 @@ function PostCard({ post, user, onRequireLogin }: PostChildProps) {
             </button>
           )}
         </header>
-        <p>{post.body}</p>
+        <PostBody body={post.body} />
         <footer className="post-actions">
           <button onClick={user ? undefined : onRequireLogin} aria-label="返信" title="返信機能は準備中です">
             <span>
