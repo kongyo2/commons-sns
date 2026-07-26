@@ -82,6 +82,55 @@ export async function getUserProfileByHandle(env: AppEnv, handle: string): Promi
   };
 }
 
+export type CreateUserResult = { ok: true; userId: string } | { ok: false; reason: "handleTaken" };
+
+/**
+ * アカウントを作成する。
+ *
+ * `adminHandle` に一致するハンドルで、かつ**ログインできる** admin が1人も
+ * 居ないときだけ role を `admin` にする（セルフホストの初期管理者ブートストラップ。
+ * `wrangler.jsonc` の `vars.ADMIN_HANDLE` を参照）。
+ *
+ * 「ログインできる」で絞るのは、シードの公式アカウントがパスワード無しの admin
+ * だから。素の `role = 'admin'` 判定だと、シードを流したインスタンスでは
+ * ブートストラップが永遠に発動しない。
+ */
+export async function createUserAccount(
+  env: AppEnv,
+  values: {
+    handle: string;
+    displayName: string;
+    passwordHash: string;
+    passwordSalt: string;
+    /** `env.ADMIN_HANDLE`。空文字・未設定なら昇格しない。 */
+    adminHandle?: string;
+  },
+): Promise<CreateUserResult> {
+  const wantsAdmin =
+    (values.adminHandle ?? "").trim().length > 0 &&
+    (values.adminHandle ?? "").trim().toLowerCase() === values.handle.toLowerCase();
+  const userId = crypto.randomUUID();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO users (id, handle, display_name, password_hash, password_salt, role)
+       SELECT ?, ?, ?, ?, ?,
+              CASE WHEN ? = 1 AND NOT EXISTS (
+                     SELECT 1 FROM users WHERE role = 'admin' AND password_hash IS NOT NULL
+                   )
+                   THEN 'admin' ELSE 'user' END`,
+    )
+      .bind(userId, values.handle, values.displayName, values.passwordHash, values.passwordSalt, wantsAdmin ? 1 : 0)
+      .run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // 「ID がすでに使われている」と言えるのは handle の一意制約に当たったときだけ。
+    // 制約違反をまとめて丸めると、主キー衝突や CHECK 違反まで利用者へ誤報してしまう。
+    if (/UNIQUE constraint failed:\s*users\.handle/i.test(message)) return { ok: false, reason: "handleTaken" };
+    throw error;
+  }
+  return { ok: true, userId };
+}
+
 export async function isFollowing(env: AppEnv, followerId: string, followingId: string): Promise<boolean> {
   const row = await env.DB.prepare("SELECT 1 AS present FROM follows WHERE follower_id = ? AND following_id = ?")
     .bind(followerId, followingId)

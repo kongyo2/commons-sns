@@ -173,7 +173,15 @@ export async function addFollow(env: AppEnv, followerId: string, followingId: st
  * that must survive a failing query.
  */
 export function failingEnv(env: AppEnv, match: string, message = "simulated D1 failure"): AppEnv {
-  const reject = () => Promise.reject(new Error(message));
+  return rejectingEnv(env, match, new Error(message));
+}
+
+/**
+ * `failingEnv` と同じだが、`Error` 以外の値でも reject できる。エラーメッセージの
+ * 取り出しが `String(error)` へ落ちる防御的な経路を通すために使う。
+ */
+export function rejectingEnv(env: AppEnv, match: string, reason: unknown): AppEnv {
+  const reject = () => Promise.reject(reason);
   const failingStatement = {
     bind: () => failingStatement,
     run: reject,

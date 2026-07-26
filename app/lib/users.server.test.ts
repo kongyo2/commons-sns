@@ -1,7 +1,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { addFollow, createPost, createTestApp, createUser, resetData, type TestApp } from "../testing/d1";
+import {
+  addFollow,
+  createPost,
+  createTestApp,
+  createUser,
+  failingEnv,
+  rejectingEnv,
+  resetData,
+  type TestApp,
+} from "../testing/d1";
 import { BIO_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH } from "./profile-constraints";
 import {
+  createUserAccount,
   getUserProfileByHandle,
   isFollowing,
   ProfileValidationError,
@@ -73,6 +83,82 @@ describe("getUserProfileByHandle", () => {
     expect(profile?.id).toBe(user.id);
     // The stored casing is what comes back, not the query casing.
     expect(profile?.handle).toBe("mixedcase");
+  });
+});
+
+describe("createUserAccount", () => {
+  const credentials = { passwordHash: "a".repeat(64), passwordSalt: "b".repeat(32) };
+
+  it("creates a regular account", async () => {
+    const result = await createUserAccount(app.env, { handle: "newbie", displayName: "新人", ...credentials });
+    expect(result).toEqual({ ok: true, userId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+
+    const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'newbie'").first<{ role: string }>();
+    expect(row).toEqual({ role: "user" });
+  });
+
+  it("reports a taken handle instead of throwing, ignoring case", async () => {
+    await createUser(app.env, { handle: "taken" });
+    const result = await createUserAccount(app.env, { handle: "TAKEN", displayName: "重複", ...credentials });
+    expect(result).toEqual({ ok: false, reason: "handleTaken" });
+  });
+
+  it("rethrows failures that are not constraint violations", async () => {
+    const env = failingEnv(app.env, "INSERT INTO users", "disk on fire");
+    await expect(createUserAccount(env, { handle: "unlucky", displayName: "不運", ...credentials })).rejects.toThrow(
+      "disk on fire",
+    );
+
+    // Error 以外で reject されても、メッセージ判定で落ちずにそのまま投げ直す。
+    const oddEnv = rejectingEnv(app.env, "INSERT INTO users", "disk on fire");
+    await expect(createUserAccount(oddEnv, { handle: "unlucky", displayName: "不運", ...credentials })).rejects.toBe(
+      "disk on fire",
+    );
+  });
+
+  it("promotes only the first account matching ADMIN_HANDLE", async () => {
+    const owner = await createUserAccount(app.env, {
+      handle: "owner",
+      displayName: "オーナー",
+      adminHandle: " Owner ",
+      ...credentials,
+    });
+    expect(owner.ok).toBe(true);
+    expect((await getUserProfileByHandle(app.env, "owner"))?.role).toBe("admin");
+
+    // 既にログインできる admin が居るので、同じ設定でも2人目は昇格しない。
+    await createUserAccount(app.env, {
+      handle: "owner2",
+      displayName: "偽オーナー",
+      adminHandle: "owner2",
+      ...credentials,
+    });
+    expect((await getUserProfileByHandle(app.env, "owner2"))?.role).toBe("user");
+  });
+
+  it("ignores password-less seed admins when deciding whether to promote", async () => {
+    // シードの公式アカウントは password 無しの admin。素の role 判定だと、
+    // シードを流したインスタンスではブートストラップが永遠に発動しない。
+    await createUser(app.env, { handle: "seed_admin", role: "admin", password: null });
+
+    const owner = await createUserAccount(app.env, {
+      handle: "owner",
+      displayName: "オーナー",
+      adminHandle: "owner",
+      ...credentials,
+    });
+    expect(owner.ok).toBe(true);
+    expect((await getUserProfileByHandle(app.env, "owner"))?.role).toBe("admin");
+  });
+
+  it("never promotes when ADMIN_HANDLE is unset, empty or a different handle", async () => {
+    await createUserAccount(app.env, { handle: "plain", displayName: "普通", ...credentials });
+    await createUserAccount(app.env, { handle: "blank", displayName: "空", adminHandle: "   ", ...credentials });
+    await createUserAccount(app.env, { handle: "other", displayName: "別人", adminHandle: "someone", ...credentials });
+
+    for (const handle of ["plain", "blank", "other"]) {
+      expect((await getUserProfileByHandle(app.env, handle))?.role).toBe("user");
+    }
   });
 });
 

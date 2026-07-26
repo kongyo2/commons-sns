@@ -503,6 +503,42 @@ describe("action envelope", () => {
   });
 });
 
+describe("invite code", () => {
+  const signupFields = { intent: "signup", handle: "invited", displayName: "招待", password: "password123" };
+  /** INVITE_CODE を設定した env。シークレットなので `vars` ではなく実行時に生える。 */
+  const gatedEnv = () => ({ ...app.env, INVITE_CODE: "  open-sesame  " });
+
+  it("tells the client whether the signup form needs an invite field", async () => {
+    expect((await callLoader(getRequest("http://test.local/"))).inviteRequired).toBe(false);
+    expect((await callLoader(getRequest("http://test.local/"), gatedEnv())).inviteRequired).toBe(true);
+  });
+
+  it("rejects a missing or wrong code with 403 while the gate is on", async () => {
+    for (const inviteCode of ["", "wrong-code", "Open-Sesame"]) {
+      const result = await callAction(formRequest(URL_HOME, { ...signupFields, inviteCode }), gatedEnv());
+      const { data, status } = expectData<ActionResult>(result);
+      expect(status).toBe(403);
+      expect(data.form).toBe("signup");
+      expect(data.error).toBe("招待コードが正しくありません。");
+    }
+    const row = await app.env.DB.prepare("SELECT COUNT(*) AS total FROM users").first<{ total: number }>();
+    expect(row?.total).toBe(0);
+  });
+
+  it("creates the account when the code matches, ignoring surrounding whitespace", async () => {
+    const result = await callAction(
+      formRequest(URL_HOME, { ...signupFields, inviteCode: " open-sesame " }),
+      gatedEnv(),
+    );
+    expect(expectRedirect(result).location).toBe("/");
+  });
+
+  it("ignores the field entirely while the gate is off", async () => {
+    const result = await callAction(formRequest(URL_HOME, { ...signupFields, inviteCode: "nonsense" }));
+    expect(expectRedirect(result).location).toBe("/");
+  });
+});
+
 describe("rate limits", () => {
   const signupFields = { intent: "signup", displayName: "新人", password: "password123" };
 

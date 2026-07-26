@@ -35,6 +35,7 @@ import {
   verifyPasswordOrDummy,
 } from "../lib/auth.server";
 import type { SessionUser } from "../lib/auth.server";
+import { isInviteRequired, verifyInviteCode } from "../lib/invite.server";
 import { avatarAppearance, PostIdentity, UserAvatar } from "../lib/post-presentation";
 import { getTimeline } from "../lib/posts.server";
 import type { TimelinePost, TimelineScope } from "../lib/posts.server";
@@ -42,6 +43,7 @@ import { clientKey, consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } fr
 import type { RateLimitName } from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { countCodePoints, isReservedHandle, sanitizeText } from "../lib/text";
+import { createUserAccount } from "../lib/users.server";
 
 type ActionResult = {
   ok?: boolean;
@@ -74,11 +76,20 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     envValue: env.COMMONS_LOCAL_AUTO_RELOAD_MS,
     queryValue: url.searchParams.get("autoReloadMs"),
   });
+  // INVITE_CODE が設定されている間だけ、登録フォームに招待コード欄を出す。
+  const inviteRequired = isInviteRequired(env);
   try {
-    return { user, tab, posts: await getTimeline(env, user?.id ?? null, tab), timelineError: false, autoReloadMs };
+    return {
+      user,
+      tab,
+      posts: await getTimeline(env, user?.id ?? null, tab),
+      timelineError: false,
+      autoReloadMs,
+      inviteRequired,
+    };
   } catch (error) {
     console.error("getTimeline failed", error);
-    return { user, tab, posts: [] as TimelinePost[], timelineError: true, autoReloadMs };
+    return { user, tab, posts: [] as TimelinePost[], timelineError: true, autoReloadMs, inviteRequired };
   }
 }
 
@@ -138,8 +149,12 @@ export async function action({ request, context }: Route.ActionArgs) {
 async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormData, request: Request) {
   // 登録は IP 単位で絞る。バケツは isolate ローカルなので、分散した攻撃までは
   // 止まらない（`rate-limit.server.ts` の冒頭コメントを参照）。
+  // 招待コードの総当たりもこの枠で遅くなる。
   const limited = enforceLimit("signup", clientKey(request), "signup");
   if (limited) return limited;
+  if (!verifyInviteCode(env, formText(formData, "inviteCode"))) {
+    return fail("招待コードが正しくありません。", 403, "signup");
+  }
   const handle = formText(formData, "handle").toLowerCase().replace(/^@/, "");
   const displayName = sanitizeText(formText(formData, "displayName"));
   const password = String(formData.get("password") ?? "");
@@ -156,24 +171,26 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
   if (password.length < 8 || password.length > 128) {
     return fail("パスワードは8〜128文字で入力してください。", 400, "signup");
   }
-  const userId = crypto.randomUUID();
   const { hash, salt } = await hashPassword(password);
+  let created;
   try {
-    await env.DB.prepare(
-      `INSERT INTO users (id, handle, display_name, password_hash, password_salt)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-      .bind(userId, handle, displayName, hash, salt)
-      .run();
+    created = await createUserAccount(env, {
+      handle,
+      displayName,
+      passwordHash: hash,
+      passwordSalt: salt,
+      // `wrangler.jsonc` の vars.ADMIN_HANDLE。ログインできる admin がまだ居ない
+      // インスタンスで、このハンドルで最初に登録したアカウントだけが admin になる。
+      adminHandle: env.ADMIN_HANDLE,
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/UNIQUE|constraint/i.test(message)) {
-      return fail("そのIDはすでに使われています。", 409, "signup");
-    }
     console.error("handleSignup insert failed", error);
     return fail("登録できませんでした。時間をおいてもう一度お試しください。", 500, "signup");
   }
-  return redirect("/", { headers: { "Set-Cookie": await createSession(env, userId, ctx) } });
+  if (!created.ok) {
+    return fail("そのIDはすでに使われています。", 409, "signup");
+  }
+  return redirect("/", { headers: { "Set-Cookie": await createSession(env, created.userId, ctx) } });
 }
 
 async function handleLogin(env: AppEnv, ctx: ExecutionContext, formData: FormData, request: Request) {
@@ -314,17 +331,20 @@ function IntentForm({ intent, fields, fetcher, children, ...formProps }: IntentF
  *
  * @param mode - The authentication mode to display.
  * @param error - An optional error message shown in the form.
+ * @param inviteRequired - Whether the instance requires an invite code to sign up.
  * @param onClose - Called when the modal is dismissed.
  * @param onChange - Called when the user switches authentication modes.
  */
 function AuthModal({
   mode,
   error,
+  inviteRequired,
   onClose,
   onChange,
 }: {
   mode: "login" | "signup";
   error?: string;
+  inviteRequired: boolean;
   onClose: () => void;
   onChange: (mode: "login" | "signup") => void;
 }) {
@@ -376,6 +396,12 @@ function AuthModal({
         <h2 id="auth-title">{mode === "login" ? "Commonsにログイン" : "Commonsをはじめる"}</h2>
         <p>{mode === "login" ? "おかえりなさい。" : "メールアドレスなしですぐに登録できます。"}</p>
         <IntentForm intent={mode} className="auth-form">
+          {mode === "signup" && inviteRequired && (
+            <label>
+              招待コード
+              <input name="inviteCode" required autoComplete="off" placeholder="オーナーから受け取ったコード" />
+            </label>
+          )}
           {mode === "signup" && (
             <label>
               表示名
@@ -561,7 +587,7 @@ function PostCard({ post, user, onRequireLogin }: PostChildProps) {
 }
 
 export default function HomePage({ loaderData, actionData }: Route.ComponentProps) {
-  const { user, posts, tab, timelineError, autoReloadMs } = loaderData;
+  const { user, posts, tab, timelineError, autoReloadMs, inviteRequired } = loaderData;
   const mobileAvatar = user
     ? avatarAppearance({ name: user.displayName, handle: user.handle, avatarKey: user.avatarKey })
     : null;
@@ -886,6 +912,7 @@ export default function HomePage({ loaderData, actionData }: Route.ComponentProp
         <AuthModal
           mode={visibleAuthMode}
           error={!dismissedError && actionData?.form === visibleAuthMode ? actionData.error : undefined}
+          inviteRequired={inviteRequired}
           onClose={closeAuth}
           onChange={openAuth}
         />
