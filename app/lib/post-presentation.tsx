@@ -47,7 +47,7 @@ export function avatarClass(handle: string) {
 
 /**
  * 公式バッジを出すロール。ハンドル決め打ち（`commons_dev`）をやめ、`users.role` で
- * 判定する。フォーク・セルフホストでは公式アカウントのハンドルが違うため、
+ * 判定する。セルフホストでは公式アカウントのハンドルが違うため、
  * 決め打ちだとバッジが誰にも付かない（あるいは無関係な人に付く）。
  */
 export function isOfficialRole(role: string) {
