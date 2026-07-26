@@ -5,8 +5,8 @@ import type { Route } from "./+types/bookmarks";
 import { cloudflareContext } from "../cloudflare";
 import { getSessionUser } from "../lib/auth.server";
 import {
-  CACHE_FRESH_MS,
   cacheKeys,
+  canSkipRevalidation,
   consumeBypass,
   markBypass,
   readCachedView,
@@ -93,10 +93,12 @@ export async function clientLoader({ request, serverLoader }: Route.ClientLoader
 
   if (consumeBypass(key)) return fetchFresh();
 
-  const cached = await readCachedView<BookmarksData>(key, viewerHint());
+  const hint = viewerHint();
+  const cached = await readCachedView<BookmarksData>(key, hint);
   if (!cached) return fetchFresh();
 
-  if (Date.now() - cached.savedAt < CACHE_FRESH_MS) {
+  // 未ログインの公開ページに限り再フェッチを省略する（理由は `canSkipRevalidation`）。
+  if (canSkipRevalidation(hint, cached.savedAt)) {
     return { ...cached.payload, cacheState: "fresh-cache" as const };
   }
   markBypass(key);

@@ -5,6 +5,8 @@ import {
   CACHE_MAX_AGE_MS,
   CACHE_STORE_NAME,
   cacheKeys,
+  canSkipRevalidation,
+  CACHE_FRESH_MS,
   clearCache,
   consumeBypass,
   createIndexedDbStore,
@@ -602,5 +604,26 @@ describe("状態の永続化（リロードまたぎ）", () => {
     setCacheStoreForTests(createMemoryStore());
 
     expect(viewerHint()).toBe(GUEST_OWNER);
+  });
+});
+
+describe("canSkipRevalidation", () => {
+  it("未ログインの記録は鮮度ウィンドウ内なら再検証を省ける", () => {
+    const now = Date.now();
+    expect(canSkipRevalidation(GUEST_OWNER, now, now)).toBe(true);
+    expect(canSkipRevalidation(GUEST_OWNER, now - CACHE_FRESH_MS + 1, now)).toBe(true);
+  });
+
+  it("鮮度ウィンドウを過ぎたら未ログインでも再検証する", () => {
+    const now = Date.now();
+    expect(canSkipRevalidation(GUEST_OWNER, now - CACHE_FRESH_MS, now)).toBe(false);
+  });
+
+  it("ログイン中は鮮度ウィンドウ内でも必ず再検証する", () => {
+    // 省略するとサーバーへ一度も行かないため、他端末でのパスワード変更などで
+    // セッションが失効しても検知できず、認証が要る一覧を出し続けてしまう。
+    const now = Date.now();
+    expect(canSkipRevalidation("user_1", now, now)).toBe(false);
+    expect(canSkipRevalidation("user_1", now - 1, now)).toBe(false);
   });
 });

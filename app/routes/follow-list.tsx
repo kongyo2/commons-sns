@@ -5,8 +5,8 @@ import type { Route } from "./+types/follow-list";
 import { cloudflareContext } from "../cloudflare";
 import { getSessionUser } from "../lib/auth.server";
 import {
-  CACHE_FRESH_MS,
   cacheKeys,
+  canSkipRevalidation,
   consumeBypass,
   GUEST_OWNER,
   markBypass,
@@ -128,10 +128,12 @@ export async function clientLoader({ request, params, serverLoader }: Route.Clie
 
   if (consumeBypass(key)) return fetchFresh();
 
-  const cached = await readCachedView<FollowListData>(key, viewerHint());
+  const hint = viewerHint();
+  const cached = await readCachedView<FollowListData>(key, hint);
   if (!cached) return fetchFresh();
 
-  if (Date.now() - cached.savedAt < CACHE_FRESH_MS) {
+  // 未ログインの公開ページに限り再フェッチを省略する（理由は `canSkipRevalidation`）。
+  if (canSkipRevalidation(hint, cached.savedAt)) {
     return { ...cached.payload, cacheState: "fresh-cache" as const };
   }
   markBypass(key);

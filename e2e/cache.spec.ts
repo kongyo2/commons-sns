@@ -1,10 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
-import { createPost, logOut, postCard, signUp, uniqueHandle } from "./helpers";
+import { createPost, gotoApp, logOut, postCard, signUp, uniqueHandle } from "./helpers";
 
 /** サイドナビからブックマークへ（クライアント遷移）。 */
 async function goToBookmarks(page: Page) {
   await page.locator("nav.main-nav").getByRole("link", { name: "ブックマーク" }).click();
   await expect(page.getByRole("heading", { name: "ブックマーク", level: 1 })).toBeVisible();
+}
+
+/** タイムライン先頭の投稿から、その投稿者のプロフィールへ（クライアント遷移）。 */
+async function goToFirstProfile(page: Page) {
+  await page.locator(".post .post-identity-link").first().click();
+  await expect(page.getByRole("link", { name: "タイムラインへ戻る" })).toBeVisible();
 }
 
 /** サブページからタイムラインへ（クライアント遷移）。 */
@@ -53,18 +59,39 @@ test.describe("クライアントキャッシュ", () => {
     await expect(postCard(page, first)).toBeVisible();
   });
 
-  test("鮮度ウィンドウ内の再訪はサーバーへ行かない", async ({ page }) => {
+  test("未ログインの再訪は鮮度ウィンドウ内ならサーバーへ行かない", async ({ page }) => {
+    // 鮮度ウィンドウの省略は未ログインの公開ページだけに効く（`canSkipRevalidation`）。
+    // 1往復目でタイムラインとプロフィールの両方をキャッシュに載せる。
+    await gotoApp(page, "/");
+    await goToFirstProfile(page);
+    const profileUrl = page.url();
+    await backToTimeline(page);
+
+    const dataRequests = countDataRequests(page);
+    // 2往復目は履歴を戻る／進むで**同じ URL** を再訪する。並列実行中の他テストが
+    // 投稿するとタイムライン先頭のカードが入れ替わり、リンクを押し直す方式では
+    // 別のプロフィールへ飛んでキャッシュキーが変わってしまう。
+    await page.goBack();
+    await expect(page).toHaveURL(profileUrl);
+    await expect(page.getByRole("link", { name: "タイムラインへ戻る" })).toBeVisible();
+    await page.goForward();
+    await expect(page.locator("form.composer, .account-switcher.logged-out").first()).toBeVisible();
+
+    // Worker 呼び出しも D1 読み取りも発生しない。
+    expect(dataRequests).toEqual([]);
+  });
+
+  test("ログイン中はキャッシュを出しつつ必ず再検証する", async ({ page }) => {
+    // 他端末でのパスワード変更などでセッションが失効しても検知できるよう、
+    // ログイン中は再検証を省略しない。
     await signUp(page);
-    // 1往復目でタイムラインとブックマークの両方をキャッシュに載せる。
     await goToBookmarks(page);
     await backToTimeline(page);
 
     const dataRequests = countDataRequests(page);
     await goToBookmarks(page);
-    await backToTimeline(page);
 
-    // Worker 呼び出しも D1 読み取りも発生しない。
-    expect(dataRequests).toEqual([]);
+    await expect(() => expect(dataRequests.length).toBeGreaterThan(0)).toPass({ timeout: 5_000 });
   });
 
   test("ログアウトするとログイン中の状態がキャッシュから復活しない", async ({ page }) => {

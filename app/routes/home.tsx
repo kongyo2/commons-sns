@@ -36,8 +36,8 @@ import {
 } from "../lib/auth.server";
 import type { SessionUser } from "../lib/auth.server";
 import {
-  CACHE_FRESH_MS,
   cacheKeys,
+  canSkipRevalidation,
   clearCache,
   consumeBypass,
   GUEST_OWNER,
@@ -129,14 +129,16 @@ export async function clientLoader({ request, serverLoader }: Route.ClientLoader
   // 直前に stale を返した再検証パスは必ずサーバーへ行く。
   if (consumeBypass(key)) return fetchFresh();
 
-  const cached = await readCachedView<TimelineData>(key, viewerHint());
+  const hint = viewerHint();
+  const cached = await readCachedView<TimelineData>(key, hint);
   if (!cached) return fetchFresh();
 
-  // 鮮度ウィンドウ内なら再フェッチ自体を省略する（Worker 呼び出しも D1 読み取りも 0）。
-  if (Date.now() - cached.savedAt < CACHE_FRESH_MS) {
+  // 未ログインの公開ページに限り、鮮度ウィンドウ内は再フェッチ自体を省略する。
+  // ログイン中は必ず再検証する（理由は `canSkipRevalidation`）。
+  if (canSkipRevalidation(hint, cached.savedAt)) {
     return { ...cached.payload, cacheState: "fresh-cache" as const };
   }
-  // 古いが使える: まず即時表示して、直後に再検証する。
+  // 即時表示して、直後に再検証する。
   markBypass(key);
   return { ...cached.payload, cacheState: "stale-cache" as const };
 }

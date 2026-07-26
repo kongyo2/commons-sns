@@ -356,6 +356,23 @@ export async function clearCache(): Promise<void> {
   }
 }
 
+/**
+ * 鮮度ウィンドウを適用して「再検証そのものを省く」ことが許されるかを判定する。
+ *
+ * **ログイン中の閲覧者には許さない。** 省略するとサーバーへ 1 度も行かないため、
+ * 他端末でのパスワード変更（`changePassword` は他セッションを失効させる）や
+ * セッションの期限切れが起きても、この端末はそれを検知できない。認証が要る
+ * 一覧（ブックマークなど）を、ログインし直すべき状態のまま出し続けてしまう。
+ *
+ * 未ログインのレコードは公開ページの内容なので、従来どおり鮮度ウィンドウを使う。
+ * ログイン中は「キャッシュを即時表示 → 直後に必ず再検証」（stale-while-revalidate）
+ * になり、表示の速さは保ったまま、失効は次の遷移で必ず反映される。
+ */
+export function canSkipRevalidation(owner: string, savedAt: number, now: number = Date.now()): boolean {
+  if (owner !== GUEST_OWNER) return false;
+  return now - savedAt < CACHE_FRESH_MS;
+}
+
 /** 次回この key を読むときはキャッシュを無視してネットワークへ行く。 */
 export function markBypass(key: string): void {
   bypassKeys.add(key);
