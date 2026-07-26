@@ -284,7 +284,10 @@ describe("settings rate limits", () => {
     const user = await createUser(app.env, { handle: "owner" });
     const cookie = await loginCookie(app.env, user.id);
     // パスワード変更と退会は同じ枠（PBKDF2 の CPU を守るため）を共有する。
-    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) consumeToken("credential", user.id);
+    // 主体は「利用者 × 送信元」。テストの送信は CF-Connecting-IP を持たないので "unknown"。
+    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) {
+      consumeToken("credential", `${user.id}:unknown`);
+    }
 
     const changed = await callAction(
       formRequest(
@@ -324,9 +327,45 @@ describe("settings rate limits", () => {
   it("leaves logout unthrottled", async () => {
     const user = await createUser(app.env);
     const cookie = await loginCookie(app.env, user.id);
-    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) consumeToken("credential", user.id);
+    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) {
+      consumeToken("credential", `${user.id}:unknown`);
+    }
 
     const result = await callAction(formRequest(URL_SETTINGS, { intent: "logout" }, { cookie }));
     expect(expectRedirect(result).location).toBe("/");
+  });
+
+  it("別の送信元からの復旧操作は、盗まれたセッション側の消費に巻き込まれない", async () => {
+    // 攻撃者が失敗する送信で枠を空にしても、本人（別 IP）のパスワード変更は通ること。
+    // これが通らないと、乗っ取られたセッションを失効させる唯一の手段を塞がれる。
+    const user = await createUser(app.env, { handle: "victim" });
+    const cookie = await loginCookie(app.env, user.id);
+    const attackerIp = "203.0.113.9";
+    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) {
+      consumeToken("credential", `${user.id}:${attackerIp}`);
+    }
+
+    const blocked = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        { intent: "deleteAccount", password: "x", confirmation: "victim" },
+        { cookie, ip: attackerIp },
+      ),
+    );
+    expect(expectData<ActionResult>(blocked).status).toBe(429);
+
+    const owner = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        {
+          intent: "changePassword",
+          currentPassword: "correct horse battery",
+          newPassword: "brand new pass 1",
+          newPasswordConfirm: "brand new pass 1",
+        },
+        { cookie, ip: "198.51.100.4" },
+      ),
+    );
+    expect(expectData<ActionResult>(owner)).toMatchObject({ status: 200, data: { ok: true } });
   });
 });

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { createPost, gotoApp, logOut, postCard, signUp, uniqueHandle } from "./helpers";
+import { createPost, gotoApp, logIn, logOut, postCard, signUp, uniqueHandle } from "./helpers";
 
 /** サイドナビからブックマークへ（クライアント遷移）。 */
 async function goToBookmarks(page: Page) {
@@ -81,17 +81,48 @@ test.describe("クライアントキャッシュ", () => {
     expect(dataRequests).toEqual([]);
   });
 
-  test("ログイン中はキャッシュを出しつつ必ず再検証する", async ({ page }) => {
-    // 他端末でのパスワード変更などでセッションが失効しても検知できるよう、
-    // ログイン中は再検証を省略しない。
-    await signUp(page);
+  test("他端末でセッションが失効すると、キャッシュ済みの会員ページを出し続けない", async ({ page, browser }) => {
+    // ログイン中に再検証を省略すると、失効した端末が私的な一覧を出し続けられる。
+    // ここでは「別端末でのパスワード変更が、この端末のセッションを失効させる」
+    // 実際の経路で確かめる（`canSkipRevalidation` がログイン中に false を返す根拠）。
+    const user = await signUp(page);
+    // dev のタイムライン自動更新を切る。切らないと背景のポーリングが先に失効を検知して
+    // しまい、「遷移時の再検証で気づく」という本来の経路を確かめられない。
+    // 「タイムラインへ戻る」はこのクエリを保つので、以降の往復でも無効のまま。
+    await gotoApp(page, "/?autoReloadMs=0");
+    // ブックマークをキャッシュに載せてからタイムラインへ戻る。
     await goToBookmarks(page);
     await backToTimeline(page);
 
-    const dataRequests = countDataRequests(page);
-    await goToBookmarks(page);
+    // 別端末（別コンテキスト）で同じアカウントにログインし、パスワードを変更する。
+    // changePassword は他のセッションをすべて失効させるので、この page のセッションも切れる。
+    const otherContext = await browser.newContext();
+    const otherPage = await otherContext.newPage();
+    try {
+      await logIn(otherPage, user);
+      await gotoApp(otherPage, "/settings");
+      const section = otherPage.locator("section.settings-section").filter({ hasText: "パスワードを変更" });
+      await section.getByLabel("現在のパスワード").fill(user.password);
+      await section.getByLabel("新しいパスワード（8〜128文字）").fill("new-password-456");
+      await section.getByLabel("新しいパスワード（確認）").fill("new-password-456");
+      await section.getByRole("button", { name: "パスワードを変更する" }).click();
+      await expect(section.getByText("パスワードを変更しました。")).toBeVisible();
+    } finally {
+      await otherContext.close();
+    }
 
-    await expect(() => expect(dataRequests.length).toBeGreaterThan(0)).toPass({ timeout: 5_000 });
+    // 元の端末でブックマークへ移動する。キャッシュがあっても再検証するので、
+    // サーバーのリダイレクト（ログインが必要）が効いてログイン導線に戻される。
+    const nav = page.locator("nav.main-nav");
+    // 失効を先に検知していれば、この導線はリンクではなくログインを促すボタンになる。
+    // どちらの状態でも「会員ページは出さない」ことを確かめたいので両方を受ける。
+    await nav
+      .getByRole("link", { name: "ブックマーク" })
+      .or(nav.getByRole("button", { name: "ブックマーク" }))
+      .first()
+      .click();
+    await expect(page.locator(".account-switcher.logged-out")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "ブックマーク", level: 1 })).toHaveCount(0);
   });
 
   test("ログアウトするとログイン中の状態がキャッシュから復活しない", async ({ page }) => {

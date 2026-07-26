@@ -94,31 +94,25 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   });
   // INVITE_CODE が設定されている間だけ、登録フォームに招待コード欄を出す。
   const inviteRequired = isInviteRequired(env);
-  // 初期管理者のブートストラップが「まだ開いている」ときだけ、管理者コード欄を出す。
-  // コード未設定のインスタンス（既定）では追加クエリを撃たない。
-  const adminBootstrapOpen = isAdminBootstrapConfigured(env) && !(await hasLoginCapableAdmin(env));
+
+  // 【重要】D1 を触る処理はすべて try の中で行う。外に出すと、D1 が落ちたときに
+  // 「タイムラインだけ空で他は表示する」縮退経路を飛び越えて全画面 500 になる。
+  let posts: TimelinePost[] = [];
+  let timelineError = false;
+  // ブートストラップが「まだ開いている」ときだけ管理者コード欄を出す。
+  // 判定できないときは false（欄を出さない）に倒す — 出してしまうと、D1 障害中に
+  // 成立済みのインスタンスでも欄が現れる。実際の昇格は INSERT 側が判定するので、
+  // ここで false になっても正当な運営者は復旧後にやり直せる。
+  let adminBootstrapOpen = false;
   try {
-    return {
-      user,
-      tab,
-      posts: await getTimeline(env, user?.id ?? null, tab),
-      timelineError: false,
-      autoReloadMs,
-      inviteRequired,
-      adminBootstrapOpen,
-    };
+    // コード未設定のインスタンス（既定）では追加クエリを撃たない。
+    adminBootstrapOpen = isAdminBootstrapConfigured(env) && !(await hasLoginCapableAdmin(env));
+    posts = await getTimeline(env, user?.id ?? null, tab);
   } catch (error) {
-    console.error("getTimeline failed", error);
-    return {
-      user,
-      tab,
-      posts: [] as TimelinePost[],
-      timelineError: true,
-      autoReloadMs,
-      inviteRequired,
-      adminBootstrapOpen,
-    };
+    console.error("home loader failed", error);
+    timelineError = true;
   }
+  return { user, tab, posts, timelineError, autoReloadMs, inviteRequired, adminBootstrapOpen };
 }
 
 /** サーバーローダーが返す（シリアライズ済みの）タイムラインデータ。 */
@@ -482,8 +476,10 @@ function AuthModal({
           {mode === "signup" && adminBootstrapOpen && (
             <label>
               管理者コード（任意）
+              {/* 高権限のシークレットなので伏せ字にする（画面共有・録画・肩越しの覗き見対策）。 */}
               <input
                 name="adminBootstrapCode"
+                type="password"
                 autoComplete="off"
                 placeholder="このインスタンスの管理者になる場合のみ"
               />

@@ -88,6 +88,23 @@ describe("home loader", () => {
       consoleError.mockRestore();
     }
   });
+
+  it("ブートストラップ設定中に D1 が落ちても、縮退表示のまま 500 にしない", async () => {
+    // 判定用のクエリを try の外に置くと、この経路が全画面 500（ルートの
+    // ErrorBoundary）に化ける。設定を有効にしただけで復旧可能な障害が
+    // 致命的な障害に変わってしまう。
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const env = { ...brokenEnv(), ADMIN_BOOTSTRAP_CODE: "launch-code" } as unknown as typeof app.env;
+      const result = await callLoader(getRequest("http://test.local/"), env);
+      expect(result.timelineError).toBe(true);
+      expect(result.posts).toEqual([]);
+      // 判定できないときは「欄を出さない」に倒す（成立済みでも出てしまうのを防ぐ）。
+      expect(result.adminBootstrapOpen).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });
 
 describe("signup", () => {

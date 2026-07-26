@@ -38,7 +38,13 @@ export const RATE_LIMITS = {
   follow: { capacity: 30, refillPerSecond: 0.5 },
   /** プロフィール更新: ユーザーあたり 10回/5分 */
   profile: { capacity: 10, refillPerSecond: 10 / 300 },
-  /** パスワード変更・退会（PBKDF2 で CPU が重い）: ユーザーあたり 5回/10分 */
+  /**
+   * パスワード変更・退会（PBKDF2 で CPU が重い）: 「利用者 × 送信元」あたり 5回/10分。
+   *
+   * 主体に送信元を混ぜるのが要点。利用者だけを主体にすると、盗まれたセッションを
+   * 持つ第三者が失敗する送信で枠を空にし、本人の復旧操作（パスワード変更・退会）を
+   * 締め出せてしまう。
+   */
   credential: { capacity: 5, refillPerSecond: 5 / 600 },
 } as const satisfies Record<string, RateLimitRule>;
 

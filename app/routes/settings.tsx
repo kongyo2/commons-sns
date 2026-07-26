@@ -11,7 +11,7 @@ import {
   verifyPasswordOrDummy,
 } from "../lib/auth.server";
 import { clearCache } from "../lib/client-cache";
-import { consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
+import { clientKey, consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { SubpageShell } from "../lib/subpage";
 
@@ -51,7 +51,12 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   if (intent === "changePassword" || intent === "deleteAccount") {
     // どちらも PBKDF2 の導出を伴い CPU を強く使うので、実行前に絞る。
-    const verdict = consumeToken("credential", user.id);
+    //
+    // 主体は「利用者 × 送信元」にする。利用者だけを主体にすると、盗まれた
+    // セッションを持つ第三者が失敗する送信を撃ち続けるだけで枠を空にでき、
+    // 本人のパスワード変更（＝そのセッションを失効させる唯一の手段）と退会を
+    // 429 で塞げてしまう。送信元が違えば別の枠になるので、本人の復旧は通る。
+    const verdict = consumeToken("credential", `${user.id}:${clientKey(request)}`);
     if (!verdict.allowed) {
       const form = intent === "changePassword" ? "password" : "delete";
       return data<ActionResult>({ error: RATE_LIMIT_MESSAGE, form }, rateLimitResponseInit(verdict));
