@@ -539,33 +539,59 @@ describe("invite code", () => {
   });
 });
 
-describe("初期管理者ブートストラップ（ADMIN_HANDLE）", () => {
-  const fields = { intent: "signup", displayName: "運営", password: "password123" };
-  /** ADMIN_HANDLE を設定した env。生成型は空文字リテラルなので二段キャストで差し替える。 */
-  const adminEnv = () => ({ ...app.env, ADMIN_HANDLE: "admin" }) as unknown as typeof app.env;
+describe("初期管理者ブートストラップ（ADMIN_BOOTSTRAP_CODE）", () => {
+  const fields = { intent: "signup", handle: "founder", displayName: "運営", password: "password123" };
+  /** ブートストラップコードを設定した env。シークレットなので実行時にだけ生える。 */
+  const bootstrapEnv = () => ({ ...app.env, ADMIN_BOOTSTRAP_CODE: "  launch-code  " }) as unknown as typeof app.env;
 
-  it("ADMIN_HANDLE に指定した予約語ハンドルだけは登録でき、admin に昇格する", async () => {
-    // admin は予約語。免除が無いと isReservedHandle が先に弾いて、
-    // ブートストラップは一度も成立しない。
-    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "Admin" }), adminEnv());
-    expect(expectRedirect(result).location).toBe("/");
+  it("コードが未設定なら、誰も admin に昇格しない", async () => {
+    // 【重要】ハンドル名では認可しない。設定ファイルに書く値は公開リポジトリに載り
+    // 推測もできるため、「特定のハンドルで登録した人を admin にする」方式では
+    // 運営者より先に第三者が名乗るだけでインスタンスを乗っ取れてしまう。
+    expect((await callLoader(getRequest("http://test.local/"))).adminBootstrapOpen).toBe(false);
 
-    const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'admin'").first<{ role: string }>();
-    expect(row?.role).toBe("admin");
+    const result = await callAction(formRequest(URL_HOME, { ...fields, adminBootstrapCode: "anything" }));
+    expect(expectData<ActionResult>(result).status).toBe(403);
+    const row = await app.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
+    expect(row?.n).toBe(0);
   });
 
-  it("ログインできる admin が既に居れば、指定ハンドルでも予約語は拒否する", async () => {
-    // 別のアカウントで管理者が確立済みのインスタンス。免除を続けると、昇格しない
-    // ただの利用者が @admin を取れてしまい、なりすましの穴になる。
-    await createUser(app.env, { handle: "founder", role: "admin" });
+  it("正しいコードを提示した最初の登録だけが admin になる", async () => {
+    expect((await callLoader(getRequest("http://test.local/"), bootstrapEnv())).adminBootstrapOpen).toBe(true);
 
-    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "admin" }), adminEnv());
-    const { data, status } = expectData<ActionResult>(result);
-    expect(status).toBe(400);
-    expect(data.error).toBe("このIDは使用できません。");
-    const row = await app.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE handle = 'admin'").first<{
-      n: number;
-    }>();
+    const result = await callAction(
+      formRequest(URL_HOME, { ...fields, adminBootstrapCode: " launch-code " }),
+      bootstrapEnv(),
+    );
+    expect(expectRedirect(result).location).toBe("/");
+    const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'founder'").first<{ role: string }>();
+    expect(row?.role).toBe("admin");
+
+    // 成立後は入力欄そのものが消え、同じコードでも2人目は昇格しない。
+    expect((await callLoader(getRequest("http://test.local/"), bootstrapEnv())).adminBootstrapOpen).toBe(false);
+    await callAction(
+      formRequest(URL_HOME, { ...fields, handle: "second", adminBootstrapCode: "launch-code" }),
+      bootstrapEnv(),
+    );
+    const second = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'second'").first<{ role: string }>();
+    expect(second?.role).toBe("user");
+  });
+
+  it("コード欄が空の通常の登録は、これまでどおり一般利用者になる", async () => {
+    const result = await callAction(formRequest(URL_HOME, fields), bootstrapEnv());
+    expect(expectRedirect(result).location).toBe("/");
+    const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'founder'").first<{ role: string }>();
+    expect(row?.role).toBe("user");
+  });
+
+  it("誤ったコードは 403 で弾き、アカウントも作らない", async () => {
+    for (const adminBootstrapCode of ["wrong", "Launch-Code"]) {
+      const result = await callAction(formRequest(URL_HOME, { ...fields, adminBootstrapCode }), bootstrapEnv());
+      const { data, status } = expectData<ActionResult>(result);
+      expect(status).toBe(403);
+      expect(data.error).toBe("管理者コードが正しくありません。");
+    }
+    const row = await app.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
     expect(row?.n).toBe(0);
   });
 
@@ -573,61 +599,20 @@ describe("初期管理者ブートストラップ（ADMIN_HANDLE）", () => {
     // シードの公式アカウントは admin だがログインできないので、ブートストラップは開いたまま。
     await createUser(app.env, { handle: "seed_admin", role: "admin", password: null });
 
-    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "admin" }), adminEnv());
-    expect(expectRedirect(result).location).toBe("/");
-    const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'admin'").first<{ role: string }>();
+    expect((await callLoader(getRequest("http://test.local/"), bootstrapEnv())).adminBootstrapOpen).toBe(true);
+    await callAction(formRequest(URL_HOME, { ...fields, adminBootstrapCode: "launch-code" }), bootstrapEnv());
+    const row = await app.env.DB.prepare("SELECT role FROM users WHERE handle = 'founder'").first<{ role: string }>();
     expect(row?.role).toBe("admin");
   });
 
-  it("チェック直後に他の管理者が確立された場合は、作成した行を取り消す", async () => {
-    // 事前チェックと INSERT の隙間で管理者が確立される競合。昇格しなかった
-    // 予約語ハンドルのアカウントを残すと、ただの利用者が @admin を持ってしまう。
-    const raced = {
-      ...app.env,
-      ADMIN_HANDLE: "admin",
-      DB: {
-        ...app.env.DB,
-        prepare: (sql: string) => {
-          // 事前チェックだけ「管理者は居ない」と答えさせ、INSERT 側は実物に任せる。
-          if (sql.includes("role = 'admin' AND password_hash IS NOT NULL LIMIT 1")) {
-            const empty = {
-              bind: () => empty,
-              first: () => Promise.resolve(null),
-              run: () => Promise.resolve({ meta: {} }),
-              all: () => Promise.resolve({ results: [] }),
-              raw: () => Promise.resolve([]),
-            } as unknown as D1PreparedStatement;
-            return empty;
-          }
-          return app.env.DB.prepare(sql);
-        },
-        batch: app.env.DB.batch.bind(app.env.DB),
-      },
-    } as unknown as typeof app.env;
-    // 実際には管理者が既に居る（INSERT の CASE 側はこちらを見る）。
-    await createUser(app.env, { handle: "founder", role: "admin" });
-
-    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "admin" }), raced);
+  it("予約語ハンドルはブートストラップでも免除しない", async () => {
+    const result = await callAction(
+      formRequest(URL_HOME, { ...fields, handle: "admin", adminBootstrapCode: "launch-code" }),
+      bootstrapEnv(),
+    );
     const { data, status } = expectData<ActionResult>(result);
     expect(status).toBe(400);
     expect(data.error).toBe("このIDは使用できません。");
-    // 作られかけた行は残っていない。
-    const row = await app.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE handle = 'admin'").first<{
-      n: number;
-    }>();
-    expect(row?.n).toBe(0);
-  });
-
-  it("指定と異なる予約語ハンドルは従来どおり拒否する", async () => {
-    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "owner" }), adminEnv());
-    const { data, status } = expectData<ActionResult>(result);
-    expect(status).toBe(400);
-    expect(data.error).toBe("このIDは使用できません。");
-  });
-
-  it("ADMIN_HANDLE が未設定なら予約語の免除は起きない", async () => {
-    const result = await callAction(formRequest(URL_HOME, { ...fields, handle: "admin" }));
-    expect(expectData<ActionResult>(result).status).toBe(400);
   });
 });
 

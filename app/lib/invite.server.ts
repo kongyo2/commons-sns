@@ -21,3 +21,28 @@ export function verifyInviteCode(env: AppEnv, provided: string): boolean {
   if (expected.length === 0) return true;
   return constantTimeEquals(provided.trim(), expected);
 }
+
+/**
+ * 初期管理者のブートストラップ用コードが設定されているか。
+ *
+ * **ハンドル名では認可しない。** 「特定のハンドルで登録した人を admin にする」方式は、
+ * その設定値が非シークレット（設定ファイルに入り、`admin` のように推測もできる）なので、
+ * 運営者より先に第三者が名乗るだけでインスタンスを乗っ取れてしまう。
+ * 権限の根拠は、シークレットとして配布されたコードの知識に置く
+ * （`wrangler secret put ADMIN_BOOTSTRAP_CODE`。`wrangler.jsonc` には書かない）。
+ */
+export function isAdminBootstrapConfigured(env: AppEnv): boolean {
+  return (env.ADMIN_BOOTSTRAP_CODE ?? "").trim().length > 0;
+}
+
+/**
+ * 提示されたブートストラップコードを検証する。
+ *
+ * 未設定時は常に false（＝昇格しない）。招待コードと違い「未設定なら素通し」には
+ * しない。設定されていないインスタンスで誰でも admin になれてしまうため。
+ */
+export function verifyAdminBootstrapCode(env: AppEnv, provided: string): boolean {
+  const expected = (env.ADMIN_BOOTSTRAP_CODE ?? "").trim();
+  if (expected.length === 0) return false;
+  return constantTimeEquals(provided.trim(), expected);
+}

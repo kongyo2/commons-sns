@@ -46,7 +46,12 @@ import {
   viewerHint,
   writeCachedView,
 } from "../lib/client-cache";
-import { isInviteRequired, verifyInviteCode } from "../lib/invite.server";
+import {
+  isAdminBootstrapConfigured,
+  isInviteRequired,
+  verifyAdminBootstrapCode,
+  verifyInviteCode,
+} from "../lib/invite.server";
 import { avatarAppearance, PostBody, PostIdentity, UserAvatar } from "../lib/post-presentation";
 import { getTimeline } from "../lib/posts.server";
 import type { TimelinePost, TimelineScope } from "../lib/posts.server";
@@ -54,7 +59,7 @@ import { clientKey, consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } fr
 import type { RateLimitName } from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { countCodePoints, isReservedHandle, sanitizeText } from "../lib/text";
-import { createUserAccount, deleteUserAccount, hasLoginCapableAdmin } from "../lib/users.server";
+import { createUserAccount, hasLoginCapableAdmin } from "../lib/users.server";
 
 type ActionResult = {
   ok?: boolean;
@@ -89,6 +94,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   });
   // INVITE_CODE が設定されている間だけ、登録フォームに招待コード欄を出す。
   const inviteRequired = isInviteRequired(env);
+  // 初期管理者のブートストラップが「まだ開いている」ときだけ、管理者コード欄を出す。
+  // コード未設定のインスタンス（既定）では追加クエリを撃たない。
+  const adminBootstrapOpen = isAdminBootstrapConfigured(env) && !(await hasLoginCapableAdmin(env));
   try {
     return {
       user,
@@ -97,10 +105,19 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       timelineError: false,
       autoReloadMs,
       inviteRequired,
+      adminBootstrapOpen,
     };
   } catch (error) {
     console.error("getTimeline failed", error);
-    return { user, tab, posts: [] as TimelinePost[], timelineError: true, autoReloadMs, inviteRequired };
+    return {
+      user,
+      tab,
+      posts: [] as TimelinePost[],
+      timelineError: true,
+      autoReloadMs,
+      inviteRequired,
+      adminBootstrapOpen,
+    };
   }
 }
 
@@ -212,19 +229,10 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
   if (!/^[a-z0-9_]{3,20}$/.test(handle)) {
     return fail("IDは3〜20文字の半角英数字と_で入力してください。", 400, "signup");
   }
-  // 予約語はなりすまし防止のためのもの。運営者が ADMIN_HANDLE で明示した初期管理者名は
-  // 正当な利用者なので、そのハンドルに限って免除する（admin や owner のような予約語を
-  // 指定すると、免除なしではブートストラップが一度も成立しない）。
-  //
-  // ただし免除は「ブートストラップがまだ成立していない」間だけ。別のアカウントで
-  // 管理者が確立済みのインスタンスでこの免除を続けると、昇格しないただの利用者が
-  // 予約語ハンドル（例: @admin）を取れてしまい、なりすましの穴になる。
-  // 判定は createUserAccount の昇格条件とまったく同じものを使う。
-  const bootstrapHandle = (env.ADMIN_HANDLE ?? "").trim().toLowerCase();
-  const reservedForBootstrap = isReservedHandle(handle) && handle === bootstrapHandle;
+  // 予約語はなりすまし防止のためのもの。ブートストラップでも免除しない
+  // （管理者は role で示され、公式バッジもロール判定なので、特定のハンドル名は要らない）。
   if (isReservedHandle(handle)) {
-    const bootstrapOpen = reservedForBootstrap && !(await hasLoginCapableAdmin(env));
-    if (!bootstrapOpen) return fail("このIDは使用できません。", 400, "signup");
+    return fail("このIDは使用できません。", 400, "signup");
   }
   const displayNameLength = countCodePoints(displayName, 30);
   if (displayNameLength < 1 || displayNameLength > 30) {
@@ -232,6 +240,14 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
   }
   if (password.length < 8 || password.length > 128) {
     return fail("パスワードは8〜128文字で入力してください。", 400, "signup");
+  }
+  // 初期管理者への昇格は、シークレットの ADMIN_BOOTSTRAP_CODE を提示した登録だけ。
+  // 空欄の通常の登録は当然ながら昇格しない（`verifyAdminBootstrapCode` は
+  // 未設定インスタンスでも常に false を返す）。
+  const bootstrapCode = formText(formData, "adminBootstrapCode");
+  const promoteToAdmin = bootstrapCode.length > 0 && verifyAdminBootstrapCode(env, bootstrapCode);
+  if (bootstrapCode.length > 0 && !promoteToAdmin) {
+    return fail("管理者コードが正しくありません。", 403, "signup");
   }
   const { hash, salt } = await hashPassword(password);
   let created;
@@ -241,9 +257,9 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
       displayName,
       passwordHash: hash,
       passwordSalt: salt,
-      // `wrangler.jsonc` の vars.ADMIN_HANDLE。ログインできる admin がまだ居ない
-      // インスタンスで、このハンドルで最初に登録したアカウントだけが admin になる。
-      adminHandle: env.ADMIN_HANDLE,
+      // ログインできる admin がまだ居ないインスタンスでのみ、実際に昇格する
+      // （判定は INSERT と同じ文の中で行われる）。
+      promoteToAdmin,
     });
   } catch (error) {
     console.error("handleSignup insert failed", error);
@@ -251,13 +267,6 @@ async function handleSignup(env: AppEnv, ctx: ExecutionContext, formData: FormDa
   }
   if (!created.ok) {
     return fail("そのIDはすでに使われています。", 409, "signup");
-  }
-  // 予約語の免除で入ったのに昇格しなかった＝上のチェックの直後に他のアカウントで
-  // 管理者が確立された（並行登録）。ただの利用者が予約語ハンドルを持つ状態は
-  // 作らせないので、作成した行を取り消す。
-  if (reservedForBootstrap && !created.promoted) {
-    await deleteUserAccount(env, created.userId);
-    return fail("このIDは使用できません。", 400, "signup");
   }
   return redirect("/", { headers: { "Set-Cookie": await createSession(env, created.userId, ctx) } });
 }
@@ -397,6 +406,7 @@ function IntentForm({ intent, fields, fetcher, children, ...formProps }: IntentF
  * @param mode - The authentication mode to display.
  * @param error - An optional error message shown in the form.
  * @param inviteRequired - Whether the instance requires an invite code to sign up.
+ * @param adminBootstrapOpen - Whether the initial-admin bootstrap is still open.
  * @param onClose - Called when the modal is dismissed.
  * @param onChange - Called when the user switches authentication modes.
  */
@@ -404,12 +414,14 @@ function AuthModal({
   mode,
   error,
   inviteRequired,
+  adminBootstrapOpen,
   onClose,
   onChange,
 }: {
   mode: "login" | "signup";
   error?: string;
   inviteRequired: boolean;
+  adminBootstrapOpen: boolean;
   onClose: () => void;
   onChange: (mode: "login" | "signup") => void;
 }) {
@@ -465,6 +477,16 @@ function AuthModal({
             <label>
               招待コード
               <input name="inviteCode" required autoComplete="off" placeholder="オーナーから受け取ったコード" />
+            </label>
+          )}
+          {mode === "signup" && adminBootstrapOpen && (
+            <label>
+              管理者コード（任意）
+              <input
+                name="adminBootstrapCode"
+                autoComplete="off"
+                placeholder="このインスタンスの管理者になる場合のみ"
+              />
             </label>
           )}
           {mode === "signup" && (
@@ -652,7 +674,7 @@ function PostCard({ post, user, onRequireLogin }: PostChildProps) {
 }
 
 export default function HomePage({ loaderData, actionData }: Route.ComponentProps) {
-  const { user, posts, tab, timelineError, autoReloadMs, inviteRequired } = loaderData;
+  const { user, posts, tab, timelineError, autoReloadMs, inviteRequired, adminBootstrapOpen } = loaderData;
   const mobileAvatar = user
     ? avatarAppearance({ name: user.displayName, handle: user.handle, avatarKey: user.avatarKey })
     : null;
@@ -986,6 +1008,7 @@ export default function HomePage({ loaderData, actionData }: Route.ComponentProp
           mode={visibleAuthMode}
           error={!dismissedError && actionData?.form === visibleAuthMode ? actionData.error : undefined}
           inviteRequired={inviteRequired}
+          adminBootstrapOpen={adminBootstrapOpen}
           onClose={closeAuth}
           onChange={openAuth}
         />

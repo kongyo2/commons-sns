@@ -107,9 +107,10 @@ export type CreateUserResult =
 /**
  * アカウントを作成する。
  *
- * `adminHandle` に一致するハンドルで、かつ**ログインできる** admin が1人も
- * 居ないときだけ role を `admin` にする（セルフホストの初期管理者ブートストラップ。
- * `wrangler.jsonc` の `vars.ADMIN_HANDLE` を参照）。
+ * `promoteToAdmin` が真で、かつ**ログインできる** admin が1人も居ないときだけ
+ * role を `admin` にする（初期管理者のブートストラップ）。呼び出し側は、
+ * シークレットのブートストラップコードを検証したうえでこのフラグを立てること
+ * （`app/lib/invite.server.ts` の `verifyAdminBootstrapCode`）。
  *
  * 「ログインできる」で絞るのは、シードの公式アカウントがパスワード無しの admin
  * だから。素の `role = 'admin'` 判定だと、シードを流したインスタンスでは
@@ -122,13 +123,11 @@ export async function createUserAccount(
     displayName: string;
     passwordHash: string;
     passwordSalt: string;
-    /** `env.ADMIN_HANDLE`。空文字・未設定なら昇格しない。 */
-    adminHandle?: string;
+    /** シークレットのコードを検証済みのときだけ true にする。既定は false。 */
+    promoteToAdmin?: boolean;
   },
 ): Promise<CreateUserResult> {
-  const wantsAdmin =
-    (values.adminHandle ?? "").trim().length > 0 &&
-    (values.adminHandle ?? "").trim().toLowerCase() === values.handle.toLowerCase();
+  const wantsAdmin = values.promoteToAdmin === true;
   const userId = crypto.randomUUID();
   try {
     // 昇格の判定は INSERT と同じ文の中で行う（別クエリで確かめてから書くと、
@@ -152,11 +151,6 @@ export async function createUserAccount(
     if (/UNIQUE constraint failed:\s*users\.handle/i.test(message)) return { ok: false, reason: "handleTaken" };
     throw error;
   }
-}
-
-/** アカウントを消す（ブートストラップに失敗した予約語ハンドルの取り消し用）。 */
-export async function deleteUserAccount(env: AppEnv, userId: string): Promise<void> {
-  await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
 }
 
 export async function isFollowing(env: AppEnv, followerId: string, followingId: string): Promise<boolean> {

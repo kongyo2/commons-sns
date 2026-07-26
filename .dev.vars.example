@@ -14,7 +14,10 @@ COMMONS_LOCAL_AUTO_RELOAD_MS=2000
 # 未設定・空文字なら誰でも登録できます。
 # INVITE_CODE=change-me
 
-# 初期管理者のブートストラップ。ログインできる admin がまだ居ないインスタンスで、
-# このハンドルで最初に登録したアカウントだけが admin になります。
-# 本番の値は wrangler.jsonc の vars.ADMIN_HANDLE で設定します。
-# ADMIN_HANDLE=your_handle
+# 初期管理者のブートストラップコード。設定すると、登録フォームに「管理者コード」欄が
+# 現れ、このコードを提示して登録した最初のアカウントが admin になります。
+# 一度 admin ができると欄は消え、以後このコードでは昇格しません。
+# 本番では `npx wrangler secret put ADMIN_BOOTSTRAP_CODE` で設定してください。
+# シークレットなので wrangler.jsonc には書きません（設定ファイルに書く値は
+# 公開リポジトリに載り、推測もできるため、権限の根拠にできません）。
+# ADMIN_BOOTSTRAP_CODE=change-me

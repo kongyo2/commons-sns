@@ -12,7 +12,6 @@ import {
 import { BIO_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH } from "./profile-constraints";
 import {
   createUserAccount,
-  deleteUserAccount,
   FOLLOW_LIST_PAGE_SIZE,
   hasLoginCapableAdmin,
   getFollowList,
@@ -121,21 +120,21 @@ describe("createUserAccount", () => {
     );
   });
 
-  it("promotes only the first account matching ADMIN_HANDLE", async () => {
+  it("promotes only the first account that asks for it", async () => {
     const owner = await createUserAccount(app.env, {
-      handle: "owner",
+      handle: "owner1",
       displayName: "オーナー",
-      adminHandle: " Owner ",
+      promoteToAdmin: true,
       ...credentials,
     });
     expect(owner).toMatchObject({ ok: true, promoted: true });
-    expect((await getUserProfileByHandle(app.env, "owner"))?.role).toBe("admin");
+    expect((await getUserProfileByHandle(app.env, "owner1"))?.role).toBe("admin");
 
-    // 既にログインできる admin が居るので、同じ設定でも2人目は昇格しない。
+    // 既にログインできる admin が居るので、2人目は昇格しない。
     const second = await createUserAccount(app.env, {
       handle: "owner2",
       displayName: "偽オーナー",
-      adminHandle: "owner2",
+      promoteToAdmin: true,
       ...credentials,
     });
     expect(second).toMatchObject({ ok: true, promoted: false });
@@ -148,13 +147,13 @@ describe("createUserAccount", () => {
     await createUser(app.env, { handle: "seed_admin", role: "admin", password: null });
 
     const owner = await createUserAccount(app.env, {
-      handle: "owner",
+      handle: "owner3",
       displayName: "オーナー",
-      adminHandle: "owner",
+      promoteToAdmin: true,
       ...credentials,
     });
     expect(owner).toMatchObject({ ok: true, promoted: true });
-    expect((await getUserProfileByHandle(app.env, "owner"))?.role).toBe("admin");
+    expect((await getUserProfileByHandle(app.env, "owner3"))?.role).toBe("admin");
   });
 
   it("hasLoginCapableAdmin はログインできる admin だけを数える", async () => {
@@ -170,23 +169,16 @@ describe("createUserAccount", () => {
     expect(await hasLoginCapableAdmin(app.env)).toBe(true);
   });
 
-  it("deleteUserAccount は作成したアカウントを取り消せる", async () => {
-    // 予約語ハンドルの免除で作ったのに昇格しなかった場合の巻き戻しに使う。
-    const created = await createUserAccount(app.env, { handle: "rollback", displayName: "取消", ...credentials });
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    await deleteUserAccount(app.env, created.userId);
-
-    expect(await getUserProfileByHandle(app.env, "rollback")).toBeNull();
-  });
-
-  it("never promotes when ADMIN_HANDLE is unset, empty or a different handle", async () => {
+  it("never promotes unless the caller explicitly asks", async () => {
     await createUserAccount(app.env, { handle: "plain", displayName: "普通", ...credentials });
-    await createUserAccount(app.env, { handle: "blank", displayName: "空", adminHandle: "   ", ...credentials });
-    await createUserAccount(app.env, { handle: "other", displayName: "別人", adminHandle: "someone", ...credentials });
+    await createUserAccount(app.env, {
+      handle: "explicit",
+      displayName: "明示",
+      promoteToAdmin: false,
+      ...credentials,
+    });
 
-    for (const handle of ["plain", "blank", "other"]) {
+    for (const handle of ["plain", "explicit"]) {
       expect((await getUserProfileByHandle(app.env, handle))?.role).toBe("user");
     }
   });

@@ -9,6 +9,12 @@ export type AppEnv = Env & {
    * シークレット（`wrangler secret put INVITE_CODE`）なので `wrangler.jsonc` には書かない。
    */
   INVITE_CODE?: string;
+  /**
+   * 初期管理者のブートストラップコード。これを提示して登録した最初のアカウントだけが
+   * admin になる。シークレット（`wrangler secret put ADMIN_BOOTSTRAP_CODE`）なので
+   * `wrangler.jsonc` には書かない。
+   */
+  ADMIN_BOOTSTRAP_CODE?: string;
 };
 
 export type CloudflareContextValue = {
