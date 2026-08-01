@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getSessionUser, verifyPassword } from "../lib/auth.server";
+import { consumeToken, RATE_LIMITS, resetRateLimits } from "../lib/rate-limit.server";
 import { addFollow, addReaction, createPost, createTestApp, createUser, resetData, type TestApp } from "../testing/d1";
 import {
   expectData,
@@ -26,6 +27,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetData(app.env);
+  // レートリミットは isolate メモリに残るのでテスト間で持ち越さない。
+  resetRateLimits();
 });
 
 const URL_SETTINGS = "http://test.local/settings";
@@ -87,6 +90,43 @@ describe("settings action envelope", () => {
     expect(location).toBe("/");
     expect(setCookie).toContain("Max-Age=0");
     expect(await getSessionUser(getRequest("http://test.local/", { cookie }), app.env)).toBeNull();
+  });
+});
+
+describe("settings request guards", () => {
+  it("別サイトからの送信は 403（退会・パスワード変更を踏ませない）", async () => {
+    const user = await createUser(app.env, { handle: "csrf_settings" });
+    const cookie = await loginCookie(app.env, user.id);
+
+    const result = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        { intent: "deleteAccount", password: "correct horse battery", confirmation: "csrf_settings" },
+        { cookie, origin: "https://evil.example" },
+      ),
+    );
+
+    expect((result as Response).status).toBe(403);
+    const remaining = await app.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
+    expect(remaining?.n).toBe(1);
+  });
+
+  it("本文が大きすぎる送信は読まずに 413", async () => {
+    const user = await createUser(app.env);
+    const cookie = await loginCookie(app.env, user.id);
+
+    const result = await callAction(
+      formRequest(URL_SETTINGS, { intent: "logout" }, { cookie, contentLength: 1_048_576 }),
+    );
+
+    expect(expectData<ActionResult>(result).status).toBe(413);
+  });
+
+  it("過大な本文はセッションを引く前に落とす（未ログインでもリダイレクトしない）", async () => {
+    // セッションを先に引くと、この送信だけで 413 の前に D1 への往復を踏ませられる。
+    const result = await callAction(formRequest(URL_SETTINGS, { intent: "logout" }, { contentLength: 1_048_576 }));
+
+    expect(expectData<ActionResult>(result).status).toBe(413);
   });
 });
 
@@ -243,5 +283,144 @@ describe("deleteAccount", () => {
       post_id: string;
     }>();
     expect(remainingReaction).toEqual({ user_id: bystander.id, post_id: "bystanders_post" });
+  });
+});
+
+describe("settings rate limits", () => {
+  it("stops repeated credential operations with 429 before hashing anything", async () => {
+    const user = await createUser(app.env, { handle: "owner" });
+    const cookie = await loginCookie(app.env, user.id);
+    // パスワード変更と退会は同じ枠（PBKDF2 の CPU を守るため）を共有する。
+    // 主体は「利用者 × 送信元」。テストの送信は CF-Connecting-IP を持たないので "unknown"。
+    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) {
+      consumeToken("credential", `${user.id}:unknown`);
+    }
+
+    const changed = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        {
+          intent: "changePassword",
+          currentPassword: "correct horse battery",
+          newPassword: "brand new pass 1",
+          newPasswordConfirm: "brand new pass 1",
+        },
+        { cookie },
+      ),
+    );
+    expect(expectData<ActionResult>(changed)).toMatchObject({
+      status: 429,
+      data: { form: "password", error: "操作が多すぎます。しばらく待ってからお試しください。" },
+    });
+
+    const deleted = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        { intent: "deleteAccount", password: "correct horse battery", confirmation: "owner" },
+        { cookie },
+      ),
+    );
+    expect(expectData<ActionResult>(deleted)).toMatchObject({ status: 429, data: { form: "delete" } });
+
+    // どちらも実行されていない（パスワードは元のまま、アカウントも残っている）。
+    const account = await app.env.DB.prepare("SELECT password_hash, password_salt FROM users WHERE id = ?")
+      .bind(user.id)
+      .first<{ password_hash: string; password_salt: string }>();
+    expect(
+      await verifyPassword("correct horse battery", account?.password_hash ?? "", account?.password_salt ?? ""),
+    ).toBe(true);
+  });
+
+  it("確認欄の入力ミスでは枠を消費しない", async () => {
+    // 検証より前に消費すると、確認用の欄を打ち間違えただけで枠が空になり、
+    // パスワード変更も退会もできなくなる（どちらも同じ枠を共有しているため）。
+    const user = await createUser(app.env, { handle: "typo" });
+    const cookie = await loginCookie(app.env, user.id);
+
+    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) {
+      const mismatch = await callAction(
+        formRequest(
+          URL_SETTINGS,
+          {
+            intent: "changePassword",
+            currentPassword: "correct horse battery",
+            newPassword: "brand new pass 1",
+            newPasswordConfirm: "typed it wrong",
+          },
+          { cookie },
+        ),
+      );
+      expect(expectData<ActionResult>(mismatch).status).toBe(400);
+    }
+
+    // 退会側の確認欄の打ち間違いも、同じ枠を減らさない。
+    const wrongConfirmation = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        { intent: "deleteAccount", password: "correct horse battery", confirmation: "someone_else" },
+        { cookie },
+      ),
+    );
+    expect(expectData<ActionResult>(wrongConfirmation).status).toBe(400);
+
+    // 枠は満タンのままなので、正しい入力はそのまま通る。
+    const changed = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        {
+          intent: "changePassword",
+          currentPassword: "correct horse battery",
+          newPassword: "brand new pass 1",
+          newPasswordConfirm: "brand new pass 1",
+        },
+        { cookie },
+      ),
+    );
+    expect(expectData<ActionResult>(changed)).toMatchObject({ status: 200, data: { ok: true } });
+  });
+
+  it("leaves logout unthrottled", async () => {
+    const user = await createUser(app.env);
+    const cookie = await loginCookie(app.env, user.id);
+    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) {
+      consumeToken("credential", `${user.id}:unknown`);
+    }
+
+    const result = await callAction(formRequest(URL_SETTINGS, { intent: "logout" }, { cookie }));
+    expect(expectRedirect(result).location).toBe("/");
+  });
+
+  it("別の送信元からの復旧操作は、盗まれたセッション側の消費に巻き込まれない", async () => {
+    // 攻撃者が失敗する送信で枠を空にしても、本人（別 IP）のパスワード変更は通ること。
+    // これが通らないと、乗っ取られたセッションを失効させる唯一の手段を塞がれる。
+    const user = await createUser(app.env, { handle: "victim" });
+    const cookie = await loginCookie(app.env, user.id);
+    const attackerIp = "203.0.113.9";
+    for (let index = 0; index < RATE_LIMITS.credential.capacity; index += 1) {
+      consumeToken("credential", `${user.id}:${attackerIp}`);
+    }
+
+    const blocked = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        { intent: "deleteAccount", password: "x", confirmation: "victim" },
+        { cookie, ip: attackerIp },
+      ),
+    );
+    expect(expectData<ActionResult>(blocked).status).toBe(429);
+
+    const owner = await callAction(
+      formRequest(
+        URL_SETTINGS,
+        {
+          intent: "changePassword",
+          currentPassword: "correct horse battery",
+          newPassword: "brand new pass 1",
+          newPasswordConfirm: "brand new pass 1",
+        },
+        { cookie, ip: "198.51.100.4" },
+      ),
+    );
+    expect(expectData<ActionResult>(owner)).toMatchObject({ status: 200, data: { ok: true } });
   });
 });

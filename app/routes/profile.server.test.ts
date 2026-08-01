@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { consumeToken, RATE_LIMITS, resetRateLimits } from "../lib/rate-limit.server";
 import { isFollowing } from "../lib/users.server";
 import { addFollow, createPost, createTestApp, createUser, failingEnv, resetData, type TestApp } from "../testing/d1";
 import {
@@ -26,10 +27,18 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetData(app.env);
+  // レートリミットは isolate メモリに残るのでテスト間で持ち越さない。
+  resetRateLimits();
 });
 
 function callLoader(url: string, handle: string, cookie?: string, env = app.env) {
   return loader(routeArgs(getRequest(url, { cookie }), env, { pattern: "/users/:handle", params: { handle } }));
+}
+
+/** `data()` の init から `Retry-After` を取り出す。 */
+function retryAfterOf(result: unknown): string | null {
+  const init = (result as { init?: ResponseInit | null }).init ?? null;
+  return new Headers(init?.headers).get("Retry-After");
 }
 
 function callAction(handle: string, fields: Record<string, string>, cookie?: string, env = app.env) {
@@ -189,6 +198,58 @@ describe("profile action", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it("別サイトからの送信は 403（勝手なフォロー・プロフィール書き換えを防ぐ）", async () => {
+    await createUser(app.env, { handle: "target" });
+    const user = await createUser(app.env);
+    const cookie = await loginCookie(app.env, user.id);
+
+    const result = await action(
+      routeArgs(
+        formRequest(
+          "http://test.local/users/target",
+          { intent: "toggleFollow" },
+          { cookie, origin: "https://evil.example" },
+        ),
+        app.env,
+        { pattern: "/users/:handle", params: { handle: "target" } },
+      ),
+    );
+
+    expect((result as Response).status).toBe(403);
+    const follows = await app.env.DB.prepare("SELECT COUNT(*) AS n FROM follows").first<{ n: number }>();
+    expect(follows?.n).toBe(0);
+  });
+
+  it("本文が大きすぎる送信は読まずに 413", async () => {
+    await createUser(app.env, { handle: "target" });
+    const user = await createUser(app.env);
+    const cookie = await loginCookie(app.env, user.id);
+
+    const result = await action(
+      routeArgs(
+        formRequest("http://test.local/users/target", { intent: "toggleFollow" }, { cookie, contentLength: 1_048_576 }),
+        app.env,
+        { pattern: "/users/:handle", params: { handle: "target" } },
+      ),
+    );
+
+    expect(expectData<ActionResult>(result).status).toBe(413);
+  });
+
+  it("過大な本文はセッション・プロフィールを引く前に落とす（未ログインでも 413）", async () => {
+    // セッションとプロフィールを先に引くと、この送信だけで 413 の前に D1 への
+    // 往復を2回ぶん踏ませられる。存在しないハンドルでも 404 より先に 413 になる。
+    const result = await action(
+      routeArgs(
+        formRequest("http://test.local/users/ghost", { intent: "toggleFollow" }, { contentLength: 1_048_576 }),
+        app.env,
+        { pattern: "/users/:handle", params: { handle: "ghost" } },
+      ),
+    );
+
+    expect(expectData<ActionResult>(result).status).toBe(413);
   });
 
   it("rejects unknown intents", async () => {
@@ -363,5 +424,36 @@ describe("profile action", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+});
+
+describe("profile rate limits", () => {
+  it("stops a burst of follow toggles with 429", async () => {
+    const viewer = await createUser(app.env);
+    const target = await createUser(app.env, { handle: "target" });
+    const cookie = await loginCookie(app.env, viewer.id);
+    for (let index = 0; index < RATE_LIMITS.follow.capacity; index += 1) consumeToken("follow", viewer.id);
+
+    const result = await callAction("target", { intent: "toggleFollow" }, cookie);
+    const { data, status } = expectData<ActionResult>(result);
+    expect(status).toBe(429);
+    expect(data.error).toBe("操作が多すぎます。しばらく待ってからお試しください。");
+    expect(Number(retryAfterOf(result))).toBeGreaterThan(0);
+    expect(await isFollowing(app.env, viewer.id, target.id)).toBe(false);
+  });
+
+  it("stops a burst of profile edits with 429", async () => {
+    const user = await createUser(app.env, { handle: "editor", displayName: "編集者" });
+    const cookie = await loginCookie(app.env, user.id);
+    for (let index = 0; index < RATE_LIMITS.profile.capacity; index += 1) consumeToken("profile", user.id);
+
+    const result = await callAction("editor", { intent: "updateProfile", displayName: "別名", bio: "" }, cookie);
+    expect(expectData<ActionResult>(result).status).toBe(429);
+    expect(Number(retryAfterOf(result))).toBeGreaterThan(0);
+
+    const row = await app.env.DB.prepare("SELECT display_name FROM users WHERE id = ?")
+      .bind(user.id)
+      .first<{ display_name: string }>();
+    expect(row?.display_name).toBe("編集者");
   });
 });
