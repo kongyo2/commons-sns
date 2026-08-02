@@ -38,7 +38,13 @@ import type { SessionUser } from "../lib/auth.server";
 import { avatarAppearance, PostBody, PostIdentity, UserAvatar } from "../lib/post-presentation";
 import { getTimeline } from "../lib/posts.server";
 import type { TimelinePost, TimelineScope } from "../lib/posts.server";
-import { clientKey, consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
+import {
+  clientKey,
+  consumeToken,
+  forwardRetryAfter,
+  rateLimitResponseInit,
+  RATE_LIMIT_MESSAGE,
+} from "../lib/rate-limit.server";
 import type { RateLimitName } from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { countCodePoints, isReservedHandle, sanitizeText } from "../lib/text";
@@ -60,6 +66,9 @@ export function meta() {
     { name: "description", content: "中央集権型の、コミュニティ開発OSS SNS" },
   ];
 }
+
+/** 429 の `Retry-After` を応答へ通す（`rate-limit.server.ts`）。 */
+export const headers: Route.HeadersFunction = forwardRetryAfter;
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const { env } = context.get(cloudflareContext);

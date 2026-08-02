@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getSessionUser, SESSION_COOKIE, verifyPassword } from "../lib/auth.server";
-import { consumeToken, RATE_LIMITS, resetRateLimits } from "../lib/rate-limit.server";
+import { consumeToken, RATE_LIMIT_MESSAGE, RATE_LIMITS, resetRateLimits } from "../lib/rate-limit.server";
 import { brokenEnv, createPost, createTestApp, createUser, failingEnv, resetData, type TestApp } from "../testing/d1";
 import {
   expectData,
@@ -11,6 +11,8 @@ import {
   malformedFormRequest,
   routeArgs,
 } from "../testing/requests";
+import { createRouteFetch } from "../testing/route-server";
+import * as home from "./home";
 import { action, loader } from "./home";
 
 type ActionResult = { ok?: boolean; error?: string; form?: "login" | "signup" };
@@ -616,5 +618,44 @@ describe("rate limits", () => {
       .bind(post.id)
       .first<{ deleted_at: string | null }>();
     expect(row?.deleted_at).toBeNull();
+  });
+});
+
+/**
+ * 上の "rate limits" は action の戻り値だけを見ている。`data(payload, init)` の init が
+ * 実際の応答へどう反映されるかはリクエストハンドラの仕事なので、そこは戻り値からは
+ * 見えない（ステータス 429 だけ届いて `Retry-After` が落ちていても気づけない）。
+ * ここだけは React Router のリクエストハンドラを通して本物の `Response` を検査する。
+ */
+describe("429 の応答ヘッダ", () => {
+  const fetchRoute = createRouteFetch({ module: home, index: true });
+
+  /** 投稿の枠を使い切ったユーザーの Cookie を返す。 */
+  async function throttledUser() {
+    const user = await createUser(app.env);
+    for (let index = 0; index < RATE_LIMITS.post.capacity; index += 1) consumeToken("post", user.id);
+    return loginCookie(app.env, user.id);
+  }
+
+  it("文書リクエストの応答に Retry-After が載る", async () => {
+    const cookie = await throttledUser();
+    const response = await fetchRoute(
+      formRequest("http://test.local/?index", { intent: "createPost", body: "連投" }, { cookie }),
+      app.env,
+    );
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+
+  it("シングルフェッチの応答に Retry-After が載り、本文の文言も残る", async () => {
+    const cookie = await throttledUser();
+    const response = await fetchRoute(
+      formRequest("http://test.local/_.data?index", { intent: "createPost", body: "連投" }, { cookie }),
+      app.env,
+    );
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0);
+    // ヘッダのために素の Response へ替えると失われる部分。UI が出す文言は載ったまま。
+    expect(await response.text()).toContain(RATE_LIMIT_MESSAGE);
   });
 });

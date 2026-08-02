@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HeadersArgs } from "react-router";
+import * as bookmarks from "../routes/bookmarks";
+import * as home from "../routes/home";
+import * as profile from "../routes/profile";
+import * as settings from "../routes/settings";
 import {
   clientKey,
   consumeToken,
+  forwardRetryAfter,
   MAX_BUCKETS,
   rateLimitResponseInit,
   RATE_LIMITS,
@@ -194,6 +200,38 @@ describe("rateLimitResponseInit", () => {
       status: 429,
       headers: { "Retry-After": "42" },
     });
+  });
+});
+
+describe("forwardRetryAfter", () => {
+  function headersArgs(overrides: Partial<HeadersArgs> = {}): HeadersArgs {
+    return {
+      actionHeaders: new Headers(),
+      loaderHeaders: new Headers(),
+      parentHeaders: new Headers(),
+      errorHeaders: undefined,
+      ...overrides,
+    };
+  }
+
+  it("copies Retry-After out of the action headers", () => {
+    const actionHeaders = new Headers(rateLimitResponseInit({ allowed: false, retryAfterSeconds: 42 }).headers);
+    expect(forwardRetryAfter(headersArgs({ actionHeaders })).get("Retry-After")).toBe("42");
+  });
+
+  it("keeps the parent headers and adds nothing when the action did not throttle", () => {
+    // 429 以外の応答では、`headers` を書き出していないときと同じヘッダになる。
+    const parentHeaders = new Headers({ "Cache-Control": "no-store" });
+    const headers = forwardRetryAfter(headersArgs({ parentHeaders }));
+    expect(Object.fromEntries(headers.entries())).toEqual({ "cache-control": "no-store" });
+  });
+
+  it("レートリミットを掛ける全ルートの headers に配線されている", () => {
+    // 配線を1つ忘れると、そのルートだけ 429 のステータスは届くのに Retry-After が落ちる。
+    for (const route of [home, profile, bookmarks, settings]) {
+      const actionHeaders = new Headers({ "Retry-After": "7" });
+      expect(new Headers(route.headers(headersArgs({ actionHeaders }))).get("Retry-After")).toBe("7");
+    }
   });
 });
 
