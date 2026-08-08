@@ -9,7 +9,7 @@ import { PRESET_AVATARS, PresetAvatarSymbol } from "../lib/avatar-presets";
 import { avatarClass, normalizeDate, PostSummaryCard, UserAvatar } from "../lib/post-presentation";
 import { getUserPosts, type TimelinePost } from "../lib/posts.server";
 import { BIO_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_MIN_LENGTH } from "../lib/profile-constraints";
-import { consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
+import { consumeToken, forwardRetryAfter, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
 import type { RateLimitName } from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { SubpageShell } from "../lib/subpage";
@@ -28,6 +28,9 @@ type ActionResult = { ok?: boolean; error?: string };
 export function meta() {
   return [{ title: "プロフィール — Commons" }];
 }
+
+/** 429 の `Retry-After` を応答へ通す（`rate-limit.server.ts`）。 */
+export const headers: Route.HeadersFunction = forwardRetryAfter;
 
 /** レートリミットを1つ消費し、超過していれば 429 応答を返す。通過時は null。 */
 function enforceLimit(name: RateLimitName, subject: string) {

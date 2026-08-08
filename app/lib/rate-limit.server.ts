@@ -11,6 +11,8 @@
  * ストレージのように取り返しがつかない資源は、これとは別の永続的な上限で守ること。
  */
 
+import type { HeadersArgs } from "react-router";
+
 export type RateLimitRule = { readonly capacity: number; readonly refillPerSecond: number };
 export type RateLimitVerdict = { allowed: boolean; retryAfterSeconds: number };
 
@@ -196,6 +198,26 @@ export function consumeToken(name: RateLimitName, subject: string, now: number =
 /** 429 応答の ResponseInit。`Retry-After` は秒数で返す。 */
 export function rateLimitResponseInit(verdict: RateLimitVerdict): ResponseInit {
   return { status: 429, headers: { "Retry-After": String(verdict.retryAfterSeconds) } };
+}
+
+/**
+ * レートリミットを掛けるルートの `headers` エクスポート。
+ *
+ * React Router は action / loader が付けた応答ヘッダを、自動では応答へ引き継がない
+ * （引き継ぐのは `Set-Cookie` だけ）。`headers` を書き出していないルートでは、
+ * `data(payload, rateLimitResponseInit(verdict))` のステータス 429 は届くのに
+ * `Retry-After` だけが落ちる。文書 POST とシングルフェッチ（`.data`）はどちらも
+ * この関数の戻り値をそのまま応答ヘッダにするので、ここで載せ直す。
+ *
+ * 土台は親のヘッダのまま。`Retry-After` が無いときの応答は、`headers` を
+ * 書き出していないときと同じになる。
+ */
+export function forwardRetryAfter({ actionHeaders, parentHeaders }: HeadersArgs): Headers {
+  const headers = new Headers(parentHeaders);
+  // 枠を消費するのは action だけなので、loader のヘッダは見ない。
+  const retryAfter = actionHeaders.get("Retry-After");
+  if (retryAfter) headers.set("Retry-After", retryAfter);
+  return headers;
 }
 
 /** テスト用。全バケツを消す。 */

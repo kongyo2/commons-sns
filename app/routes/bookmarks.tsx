@@ -5,7 +5,7 @@ import { cloudflareContext } from "../cloudflare";
 import { getSessionUser } from "../lib/auth.server";
 import { PostSummaryCard } from "../lib/post-presentation";
 import { getBookmarkedPosts, type TimelinePost } from "../lib/posts.server";
-import { consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
+import { consumeToken, forwardRetryAfter, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { SubpageShell } from "../lib/subpage";
 
@@ -14,6 +14,9 @@ type ActionResult = { ok?: boolean; error?: string };
 export function meta() {
   return [{ title: "ブックマーク — Commons" }];
 }
+
+/** 429 の `Retry-After` を応答へ通す（`rate-limit.server.ts`）。 */
+export const headers: Route.HeadersFunction = forwardRetryAfter;
 
 /** ブックマーク一覧の1ページあたり件数。 */
 const BOOKMARK_PAGE_SIZE = 20;

@@ -10,7 +10,13 @@ import {
   getSessionUser,
   verifyPasswordOrDummy,
 } from "../lib/auth.server";
-import { clientKey, consumeToken, rateLimitResponseInit, RATE_LIMIT_MESSAGE } from "../lib/rate-limit.server";
+import {
+  clientKey,
+  consumeToken,
+  forwardRetryAfter,
+  rateLimitResponseInit,
+  RATE_LIMIT_MESSAGE,
+} from "../lib/rate-limit.server";
 import { crossSiteRejection, readFormDataBounded } from "../lib/request-guard.server";
 import { SubpageShell } from "../lib/subpage";
 
@@ -22,6 +28,9 @@ const PASSWORD_MAX_LENGTH = 128;
 export function meta() {
   return [{ title: "アカウント設定 — Commons" }];
 }
+
+/** 429 の `Retry-After` を応答へ通す（`rate-limit.server.ts`）。 */
+export const headers: Route.HeadersFunction = forwardRetryAfter;
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const { env } = context.get(cloudflareContext);
