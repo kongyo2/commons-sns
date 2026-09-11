@@ -28,6 +28,8 @@ jobs:
         include:
           - name: lint
             run: npm run lint:ci
+          - name: knip
+            run: npm run knip
           - name: format
             run: npm run format:check
           - name: typecheck
