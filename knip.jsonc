@@ -3,13 +3,17 @@
   // ルート・テスト・設定ファイルは React Router / Vite / Vitest / Playwright / Wrangler /
   // GitHub Actions のプラグインが自動でエントリにする。ここには Knip が自力でたどれないものだけを書く。
   //
-  // `.claude/skills/` のスクリプトは SKILL.md から `node …` で起動されるだけで、
-  // どのソースからも import されないため、エントリとして教える。
-  "entry": [".claude/skills/*/*.mjs"],
+  // `.claude/skills/` の実行スクリプトは SKILL.md から `node …` で起動されるだけで、
+  // どのソースからも import されないため、エントリとして教える。スクリプトが import する
+  // 補助モジュール（d1-sqlite.mjs など）は通常のプロジェクトファイルのままにし、
+  // import されなくなれば未使用として報告されるようにする。
+  "entry": [".claude/skills/inspect-commons-sns/inspect.mjs", ".claude/skills/run-commons-sns/driver.mjs"],
   // 末尾の `!` は production モード（`knip --production`）でも対象に含める印、
-  // `!pattern!` は production モードでだけ除外する印。テスト補助（app/testing, e2e）は
-  // production モードではテストがエントリにならず到達不能になるので、そこでは対象外にする。
-  "project": ["**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts}!", "!app/testing/**!", "!e2e/**!"],
+  // `!pattern!` は production モードでだけ除外する印。エージェント用ツール（.claude）と
+  // テスト補助（app/testing, e2e）は出荷されるコードではなく、production モードでは
+  // 起点（スクリプトやテスト）がエントリにならず到達不能になるので、そこでは対象外にする。
+  // 同居するテスト（*.test.ts）は Vitest / Playwright プラグインの入力なので Knip が自動で外す。
+  "project": ["**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts}!", "!.claude/**!", "!app/testing/**!", "!e2e/**!"],
   // ファイル内で使っている値をテストのためだけに export している箇所が多い
   // （verifyPassword、RATE_LIMITS、timeAgo など）。ファイル内でも使われなくなれば未使用として報告される。
   "ignoreExportsUsedInFile": true,
