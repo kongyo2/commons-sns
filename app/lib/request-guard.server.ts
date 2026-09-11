@@ -17,7 +17,7 @@ export const FORM_BODY_MAX_BYTES = 32_768;
 export const FORM_TOO_LARGE_MESSAGE = "送信内容が大きすぎます。";
 
 /** 本文を form として読めなかったときの利用者向けメッセージ。 */
-export const FORM_UNREADABLE_MESSAGE = "問題が発生しました。時間をおいてもう一度お試しください。";
+const FORM_UNREADABLE_MESSAGE = "問題が発生しました。時間をおいてもう一度お試しください。";
 
 /**
  * クロスサイト送信を判定する。

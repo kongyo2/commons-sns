@@ -220,7 +220,11 @@ export function forwardRetryAfter({ actionHeaders, parentHeaders }: HeadersArgs)
   return headers;
 }
 
-/** テスト用。全バケツを消す。 */
+/**
+ * テスト用。全バケツを消す。
+ *
+ * @internal
+ */
 export function resetRateLimits(): void {
   buckets.clear();
 }
